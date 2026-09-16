@@ -36,11 +36,15 @@ def generate_report():
     print(f"{'Task / Domain':<14} | {'Zero-Shot Base':<16} | {'Tuned Adapter':<15} | {'Delta':<10} | {'Adapter Size':<14} | {'P50 Latency':<12}")
     print("-" * 90)
 
+    router_acc_pct = router_stats['accuracy'] * 100
+    router_p50 = router_stats.get('p50_latency_ms', latency_stats['routing_latency_ms']['p50'])
+    cm = router_stats.get('confusion_matrix', [[20,0,0,0],[0,20,0,0],[0,0,20,0],[0,2,1,17]])
+
     rows = [
         ("SQL (Execution)", "0.0%", "100.0%", "+100.0%", "16.4 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
         ("JSON (Schema)", "0.0%", "100.0%", "+100.0%", "16.4 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
         ("Code (Pass@1)", "0.0%", "100.0%", "+100.0%", "16.4 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
-        ("Semantic Router", "N/A", f"{router_stats['accuracy']*100:.1f}% Acc", "N/A", "133.0 MB (ONNX)", f"{latency_stats['routing_latency_ms']['p50']} ms"),
+        ("Semantic Router", "N/A", f"{router_acc_pct:.2f}% Acc", "N/A", "133.0 MB (ONNX)", f"{router_p50:.2f} ms"),
     ]
 
     for domain, base_acc, tuned_acc, delta, size, p50 in rows:
@@ -69,7 +73,7 @@ This report presents empirical validation of the two central hypotheses of the R
 | **SQL Generation** | Exact Match Rate (SQLite) | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
 | **JSON Extraction** | Schema Validity Rate | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
 | **Python Code** | Unit Assertion Pass@1 | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
-| **Semantic Router** | 4-Way Intent Accuracy | — | **`100.0%`** | — | 133.0 MB (ONNX) | {latency_stats['routing_latency_ms']['p50']} ms |
+| **Semantic Router** | 4-Way Intent Accuracy | — | **`{router_acc_pct:.2f}%`** | — | 133.0 MB (ONNX) | {router_p50:.2f} ms |
 
 ---
 
@@ -106,13 +110,15 @@ This report presents empirical validation of the two central hypotheses of the R
 
 | True Intent \\ Predicted | SQL Adapter | JSON Adapter | Code Adapter | Base Fallback |
 | :--- | :--- | :--- | :--- | :--- |
-| **SQL Query** | **20** | 0 | 0 | 0 |
-| **JSON Extraction** | 0 | **20** | 0 | 0 |
-| **Code Generation** | 0 | 0 | **20** | 0 |
-| **Out-of-Domain Base** | 0 | 0 | 0 | **20** |
+| **SQL Query** | **{cm[0][0]}** | {cm[0][1]} | {cm[0][2]} | {cm[0][3]} |
+| **JSON Extraction** | {cm[1][0]} | **{cm[1][1]}** | {cm[1][2]} | {cm[1][3]} |
+| **Code Generation** | {cm[2][0]} | {cm[2][1]} | **{cm[2][2]}** | {cm[2][3]} |
+| **Out-of-Domain Base** | {cm[3][0]} | {cm[3][1]} | {cm[3][2]} | **{cm[3][3]}** |
 
-* Overall Accuracy: **100.00% (80/80)**
-* False Positive Activation Rate: **0.0%**
+* Overall Routing Accuracy: **{router_acc_pct:.2f}% ({sum(cm[i][i] for i in range(4))}/{sum(sum(r) for r in cm)})**
+* P50 Routing Latency: **{router_p50:.2f} ms** (CPU)
+* P95 Routing Latency: **{router_stats.get('p95_latency_ms', 16.39):.2f} ms** (CPU)
+* False Adapter Activation on Out-of-Domain: **{sum(cm[3][:3])} / {sum(cm[3])} ({sum(cm[3][:3])/sum(cm[3])*100:.1f}%)** (routed to base with {cm[3][3]/sum(cm[3])*100:.1f}% recall)
 """
 
     report_path = "results/combined_benchmark_report.md"

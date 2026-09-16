@@ -32,12 +32,19 @@ from src.router import get_router
 VLLM_HOST = os.environ.get("VLLM_HOST", "http://localhost:8000")
 VLLM_COMPLETIONS_URL = f"{VLLM_HOST}/v1/chat/completions"
 BASE_MODEL_NAME = os.environ.get("BASE_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
+GATEWAY_ENGINE = os.environ.get("GATEWAY_ENGINE", "peft").lower()
 
 ADAPTER_MAP = {
     "sql": "sql-adapter",
     "json": "json-adapter",
     "code": "code-adapter",
     "base": BASE_MODEL_NAME,
+}
+
+ADAPTER_PATHS = {
+    "sql": "adapters/sql_lora",
+    "json": "adapters/json_lora",
+    "code": "adapters/code_lora",
 }
 
 app = FastAPI(
@@ -69,11 +76,100 @@ class QueryResponse(BaseModel):
     total_latency_ms: float
     router_confidence: float
 
-# Global mock mode flag for testing without active GPU vLLM server
-MOCK_VLLM = os.environ.get("MOCK_VLLM", "false").lower() == "true"
+# Native PEFT Engine State
+_peft_model = None
+_peft_base_model = None
+_peft_tokenizer = None
+
+def init_peft_engine():
+    """Initializes and mounts 4-bit base model and all 3 LoRA adapters into unified VRAM."""
+    global _peft_model, _peft_base_model, _peft_tokenizer
+    if _peft_model is not None and _peft_base_model is not None:
+        return _peft_model, _peft_base_model, _peft_tokenizer
+
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+    from peft import PeftModel
+
+    print("\n" + "=" * 65, flush=True)
+    print("INITIALIZING NATIVE PEFT MULTI-ADAPTER ENGINE (RTX 4050 GPU)", flush=True)
+    print("=" * 65, flush=True)
+
+    print("1. Loading Tokenizer...", flush=True)
+    _peft_tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME, trust_remote_code=True)
+    if _peft_tokenizer.pad_token is None:
+        _peft_tokenizer.pad_token = _peft_tokenizer.eos_token
+
+    has_cuda = torch.cuda.is_available()
+    use_bf16 = has_cuda and torch.cuda.is_bf16_supported()
+    target_dtype = torch.bfloat16 if use_bf16 else torch.float16
+
+    print(f"2. Loading Base Model ({BASE_MODEL_NAME}) in 4-bit VRAM...", flush=True)
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=target_dtype,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_NAME,
+        quantization_config=bnb_config if has_cuda else None,
+        torch_dtype=target_dtype if has_cuda else torch.float32,
+        device_map="auto" if has_cuda else None,
+        trust_remote_code=True,
+    )
+
+    print("3. Registering LoRA Adapters into Unified VRAM...", flush=True)
+    model = None
+    first = True
+    for name, path in ADAPTER_PATHS.items():
+        if os.path.exists(path):
+            if first:
+                print(f"   [+] Registering '{name}' adapter from {path}", flush=True)
+                model = PeftModel.from_pretrained(base_model, path, adapter_name=name)
+                first = False
+            else:
+                print(f"   [+] Registering '{name}' adapter from {path}", flush=True)
+                model.load_adapter(path, adapter_name=name)
+
+    _peft_base_model = base_model
+    _peft_model = model if model is not None else base_model
+    vram_mb = torch.cuda.memory_allocated() / (1024 * 1024) if has_cuda else 0
+    print(f"Native PEFT Engine ONLINE! GPU VRAM Allocated: {vram_mb:.1f} MB", flush=True)
+    print("=" * 65 + "\n", flush=True)
+    return _peft_model, _peft_base_model, _peft_tokenizer
+
+def peft_generate_response(route: str, prompt: str, max_tokens: int = 256) -> str:
+    """Generates completion using active LoRA adapter on local GPU."""
+    import torch
+    model, base_model, tokenizer = init_peft_engine()
+
+    # Hot-swap adapter in VRAM (0 ms) or use base model directly
+    if route in ADAPTER_PATHS and model is not None and hasattr(model, "set_adapter"):
+        model.set_adapter(route)
+        gen_model = model
+    else:
+        # Pure base model fallback for general / out-of-domain queries
+        gen_model = base_model
+
+    messages = [{"role": "user", "content": prompt}]
+    formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(formatted, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+
+    with torch.no_grad():
+        outputs = gen_model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+
+    new_tokens = outputs[0][inputs.input_ids.shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 def mock_generate_response(model_name: str, prompt: str) -> str:
-    """Mock generator for local testing when vLLM GPU engine is not running."""
+    """Mock generator for quick testing without GPU inference."""
     if "sql" in model_name:
         return "SELECT count(*) FROM table WHERE condition = 1;"
     elif "json" in model_name:
@@ -85,26 +181,37 @@ def mock_generate_response(model_name: str, prompt: str) -> str:
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint reporting gateway status and router state."""
-    vllm_online = False
-    try:
-        r = requests.get(f"{VLLM_HOST}/health", timeout=2.0)
-        vllm_online = r.status_code == 200
-    except Exception:
-        vllm_online = False
+    """Health check endpoint reporting gateway status and active engine."""
+    import torch
+    has_cuda = torch.cuda.is_available()
+    vram_mb = round(torch.cuda.memory_allocated() / (1024 * 1024), 1) if has_cuda else 0.0
 
     return {
         "status": "healthy",
         "gateway_port": 8080,
-        "vllm_online": vllm_online or MOCK_VLLM,
-        "mock_mode": MOCK_VLLM,
+        "engine": GATEWAY_ENGINE,
+        "gpu_device": torch.cuda.get_device_name(0) if has_cuda else "CPU",
+        "vram_allocated_mb": vram_mb,
         "registered_adapters": list(ADAPTER_MAP.keys()),
         "base_model": BASE_MODEL_NAME,
     }
 
+@app.get("/v1/models")
+def list_models():
+    """OpenAI-compatible models listing endpoint."""
+    return {
+        "object": "list",
+        "data": [
+            {"id": "sql-adapter", "object": "model", "owned_by": "custom-lora"},
+            {"id": "json-adapter", "object": "model", "owned_by": "custom-lora"},
+            {"id": "code-adapter", "object": "model", "owned_by": "custom-lora"},
+            {"id": BASE_MODEL_NAME, "object": "model", "owned_by": "base"},
+        ]
+    }
+
 @app.post("/v1/chat", response_model=QueryResponse)
 def generate(req: QueryRequest):
-    """Main routing and inference endpoint."""
+    """Main routing and dynamic inference endpoint."""
     t_start = time.perf_counter()
 
     # 1. Route query (or use force_adapter override)
@@ -121,11 +228,14 @@ def generate(req: QueryRequest):
 
     model_name = ADAPTER_MAP.get(route, BASE_MODEL_NAME)
 
-    # 2. Forward request to vLLM (or mock if enabled)
-    if MOCK_VLLM:
-        time.sleep(0.05)  # Simulate small generation latency
+    # 2. Execute Generation via configured Engine
+    if GATEWAY_ENGINE == "peft":
+        content = peft_generate_response(route, req.prompt, req.max_tokens)
+    elif GATEWAY_ENGINE == "mock":
+        time.sleep(0.05)
         content = mock_generate_response(model_name, req.prompt)
     else:
+        # Forward to remote/WSL vLLM server
         try:
             vllm_payload = {
                 "model": model_name,
@@ -135,16 +245,11 @@ def generate(req: QueryRequest):
             }
             resp = requests.post(VLLM_COMPLETIONS_URL, json=vllm_payload, timeout=60.0)
             if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=resp.status_code,
-                    detail=f"vLLM server error: {resp.text}",
-                )
+                raise HTTPException(status_code=resp.status_code, detail=f"vLLM error: {resp.text}")
             content = resp.json()["choices"][0]["message"]["content"]
         except requests.exceptions.ConnectionError:
-            raise HTTPException(
-                status_code=503,
-                detail=f"vLLM backend unreachable at {VLLM_COMPLETIONS_URL}. Ensure vLLM is running or set MOCK_VLLM=true.",
-            )
+            print(f"[GATEWAY NOTICE] vLLM offline. Falling back to local PEFT generator.")
+            content = peft_generate_response(route, req.prompt, req.max_tokens)
 
     total_latency_ms = (time.perf_counter() - t_start) * 1000
 
@@ -174,20 +279,30 @@ def start_gateway(port: int = 8080, host: str = "0.0.0.0", use_ngrok: bool = Fal
         except Exception as e:
             print(f"WARNING: Could not establish ngrok tunnel: {e}")
 
-    print(f"Starting Gateway on http://{host}:{port}")
+    # Pre-warm PEFT engine if active
+    if GATEWAY_ENGINE == "peft":
+        init_peft_engine()
+
+    print(f"Starting Gateway ({GATEWAY_ENGINE.upper()} Engine) on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Routed Multi-Adapter Serving Gateway")
     parser.add_argument("--port", type=int, default=8080, help="Gateway port (default: 8080)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Gateway host")
+    parser.add_argument("--engine", type=str, choices=["peft", "vllm", "mock"], default="peft",
+                        help="Backend serving engine: 'peft' (native GPU), 'vllm' (port 8000), or 'mock'")
     parser.add_argument("--ngrok", action="store_true", help="Enable public pyngrok tunnel")
     parser.add_argument("--ngrok-token", type=str, default=None, help="Optional ngrok authtoken")
-    parser.add_argument("--mock-vllm", action="store_true", help="Enable mock mode for testing without GPU")
+    parser.add_argument("--mock-vllm", action="store_true", help="Shortcut for --engine mock")
     args = parser.parse_args()
 
     if args.mock_vllm:
-        MOCK_VLLM = True
+        GATEWAY_ENGINE = "mock"
+    else:
+        GATEWAY_ENGINE = args.engine
+
+    os.environ["GATEWAY_ENGINE"] = GATEWAY_ENGINE
 
     start_gateway(
         port=args.port,

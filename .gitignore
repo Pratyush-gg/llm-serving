@@ -43,6 +43,8 @@ credentials.json
 adapters.zip
 adapters/*/*
 !adapters/.gitkeep
+!adapters/*/README.md
+!adapters/*/adapter_config.json
 
 # Jupyter Notebook Checkpoints
 .ipynb_checkpoints/

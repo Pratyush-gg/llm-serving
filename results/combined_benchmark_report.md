@@ -1,6 +1,6 @@
 # Combined Benchmark & Evaluation Report
 **Routed Multi-Adapter LLM Serving System**
-*Generated: 2026-09-16 19:05:36*
+*Generated: 2026-09-17 01:20:55*
 
 ---
 
@@ -19,7 +19,7 @@ This report presents empirical validation of the two central hypotheses of the R
 | **SQL Generation** | Exact Match Rate (SQLite) | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | 211.69 ms |
 | **JSON Extraction** | Schema Validity Rate | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | 211.69 ms |
 | **Python Code** | Unit Assertion Pass@1 | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | 211.69 ms |
-| **Semantic Router** | 4-Way Intent Accuracy | — | **`100.0%`** | — | 133.0 MB (ONNX) | 6.12 ms |
+| **Semantic Router** | 4-Way Intent Accuracy | — | **`96.25%`** | — | 133.0 MB (ONNX) | 10.71 ms |
 
 ---
 
@@ -59,7 +59,9 @@ This report presents empirical validation of the two central hypotheses of the R
 | **SQL Query** | **20** | 0 | 0 | 0 |
 | **JSON Extraction** | 0 | **20** | 0 | 0 |
 | **Code Generation** | 0 | 0 | **20** | 0 |
-| **Out-of-Domain Base** | 0 | 0 | 0 | **20** |
+| **Out-of-Domain Base** | 0 | 2 | 1 | **17** |
 
-* Overall Accuracy: **100.00% (80/80)**
-* False Positive Activation Rate: **0.0%**
+* Overall Routing Accuracy: **96.25% (77/80)**
+* P50 Routing Latency: **10.71 ms** (CPU)
+* P95 Routing Latency: **16.39 ms** (CPU)
+* False Adapter Activation on Out-of-Domain: **3 / 20 (15.0%)** (routed to base with 85.0% recall)
