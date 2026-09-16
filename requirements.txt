@@ -1,0 +1,12 @@
+# Local / Client & Evaluation Dependencies
+pydantic>=2.0.0
+fastapi>=0.110.0
+uvicorn>=0.28.0
+requests>=2.31.0
+datasets>=2.18.0
+fastembed>=0.2.0
+scikit-learn>=1.4.0
+numpy>=1.26.0
+rich>=13.7.0
+tqdm>=4.66.0
+pytest>=8.0.0

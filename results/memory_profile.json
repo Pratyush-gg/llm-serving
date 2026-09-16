@@ -1,0 +1,22 @@
+{
+  "model_architecture": "Qwen/Qwen2.5-1.5B-Instruct (FP16)",
+  "num_adapters": 3,
+  "separate_models": {
+    "model_weights_gb": 8.62,
+    "kv_cache_gb": 4.5,
+    "runtime_overhead_gb": 1.8,
+    "total_vram_gb": 14.92
+  },
+  "multi_lora_system": {
+    "base_model_weights_gb": 2.87,
+    "adapters_total_gb": 0.048,
+    "kv_cache_gb": 4.5,
+    "runtime_overhead_gb": 0.6,
+    "total_vram_gb": 8.02
+  },
+  "metrics": {
+    "weights_reduction_percent": 66.1,
+    "total_vram_savings_percent": 46.2,
+    "vram_headroom_on_t4_gb": 7.98
+  }
+}

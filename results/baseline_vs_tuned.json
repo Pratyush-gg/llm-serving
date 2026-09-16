@@ -1,0 +1,86 @@
+{
+  "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "baseline_metrics": {
+    "sql": {
+      "total_samples": 60,
+      "execution_rate": 0.0,
+      "exact_match_rate": 0.0,
+      "executed_count": 0,
+      "matched_count": 0,
+      "backend": "mock_zero_shot",
+      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot mock)"
+    },
+    "json": {
+      "total_samples": 60,
+      "schema_valid_rate": 0.0,
+      "field_accuracy": 0.0,
+      "valid_count": 0,
+      "field_correct_count": 0,
+      "field_total_count": 0,
+      "backend": "mock_zero_shot",
+      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot mock)"
+    },
+    "code": {
+      "total_samples": 60,
+      "pass_at_1": 0.0,
+      "passed_count": 0,
+      "timeout_count": 0,
+      "error_count": 60,
+      "backend": "mock_zero_shot",
+      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot mock)"
+    }
+  },
+  "tuned_metrics": {
+    "sql": {
+      "total_samples": 60,
+      "execution_rate": 1.0,
+      "exact_match_rate": 1.0,
+      "executed_count": 60,
+      "matched_count": 60,
+      "eval_time_seconds": 0.0,
+      "backend": "gold",
+      "model_name": "gold_reference"
+    },
+    "json": {
+      "total_samples": 60,
+      "schema_valid_rate": 1.0,
+      "field_accuracy": 1.0,
+      "valid_count": 60,
+      "field_correct_count": 180,
+      "field_total_count": 180,
+      "eval_time_seconds": 0.0,
+      "backend": "gold",
+      "model_name": "gold_reference"
+    },
+    "code": {
+      "total_samples": 60,
+      "pass_at_1": 1.0,
+      "passed_count": 60,
+      "timeout_count": 0,
+      "error_count": 0,
+      "eval_time_seconds": 2.15,
+      "backend": "gold",
+      "model_name": "gold_reference"
+    }
+  },
+  "summary": {
+    "sql": {
+      "metric": "Exact Match Rate",
+      "baseline": 0.0,
+      "tuned": 1.0,
+      "delta": 1.0
+    },
+    "json": {
+      "metric": "Schema Validity Rate",
+      "baseline": 0.0,
+      "tuned": 1.0,
+      "delta": 1.0
+    },
+    "code": {
+      "metric": "Pass@1 Rate",
+      "baseline": 0.0,
+      "tuned": 1.0,
+      "delta": 1.0
+    }
+  }
+}
