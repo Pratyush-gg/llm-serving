@@ -56,9 +56,9 @@ Empirical validation across all three domain tasks comparing zero-shot base mode
 
 | Task / Domain | Primary Correctness Metric | Zero-Shot Baseline | Tuned LoRA Adapter | Specialization Delta ($\Delta$) | Adapter Size on Disk | P50 Request Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SQL Generation** | SQLite Exact Match Rate | `0.0%` (0/60) | **`100.0%` (60/60)** | **`+100.0%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (950 ms native) |
-| **JSON Extraction** | Pydantic Schema Validity Rate | `0.0%` (0/60) | **`100.0%` (60/60)** | **`+100.0%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.8 s native) |
-| **Python Code** | Subprocess Unit Assertion Pass@1 | `0.0%` (0/60) | **`100.0%` (60/60)** | **`+100.0%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.4 s native) |
+| **SQL Generation** | SQLite Exact Match Rate | `90.0%` (54/60) | **`96.67%` (58/60)** | **`+6.67%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (950 ms native) |
+| **JSON Extraction** | Pydantic Schema Validity Rate | `53.33%` (32/60) | **`100.0%` (60/60)** | **`+46.67%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.8 s native) |
+| **Python Code** | Subprocess Unit Assertion Pass@1 | `80.0%` (48/60) | **`100.0%` (60/60)** | **`+20.00%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.4 s native) |
 | **Semantic Router** | 4-Way Intent Classification | — | **`96.25%` (77/80)** | — | 133.0 MB (ONNX) | 10.71 ms (CPU) |
 
 ---

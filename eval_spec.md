@@ -18,7 +18,9 @@ All three specialized tasks adhere to a strict split:
 * **Held-Out Evaluation Set:** Exactly 60 examples per task (`data/*_holdout.jsonl`).
 
 > [!IMPORTANT]
-> **Zero Contamination Guarantee:** The held-out sets are completely disjoint from the training sets (0% overlap verified via `scripts/validate_datasets.py`). These 60 examples are reserved exclusively for Day 3 & Day 4 evaluations and must never be exposed during LoRA fine-tuning.
+> **Zero Contamination Guarantee:** The held-out sets are completely disjoint from the training sets (0% exact text overlap verified via `scripts/validate_datasets.py`). These 60 examples are reserved exclusively for Day 3 & Day 4 evaluations and must never be exposed during LoRA fine-tuning.
+> 
+> *Dataset Structure Note:* For synthetic JSON extraction (`scripts/generate_json_data.py`), all 60 holdout examples share the 15 generator template patterns with the training set, varying across user names, transaction IDs, and currency amounts.
 
 ---
 
@@ -119,8 +121,8 @@ The evaluation suite validates both task specialization and runtime efficiency:
 
 | Task / Domain | Primary Metric | Baseline (Zero-Shot) | Tuned LoRA Adapter | Delta ($\Delta$) | Adapter Size on Disk | P50 Request Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SQL Generation** | SQLite Exact Match Rate | `0.0%` (0/60) | **`100.0%` (60/60)** | **`+100.0%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (950 ms native) |
-| **JSON Extraction** | Pydantic Schema Validity | `0.0%` (0/60) | **`100.0%` (60/60)** | **`+100.0%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.8 s native) |
-| **Python Code** | Subprocess Unit Pass@1 | `0.0%` (0/60) | **`100.0%` (60/60)** | **`+100.0%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.4 s native) |
+| **SQL Generation** | SQLite Exact Match Rate | `90.0%` (54/60) | **`96.67%` (58/60)** | **`+6.67%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (950 ms native) |
+| **JSON Extraction** | Pydantic Schema Validity | `53.33%` (32/60) | **`100.0%` (60/60)** | **`+46.67%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.8 s native) |
+| **Python Code** | Subprocess Unit Pass@1 | `80.0%` (48/60) | **`100.0%` (60/60)** | **`+20.00%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.4 s native) |
 | **Semantic Router** | 4-Way Intent Accuracy | — | **`96.25%` (77/80)** | — | 133.0 MB (ONNX) | 10.71 ms (CPU) |
 

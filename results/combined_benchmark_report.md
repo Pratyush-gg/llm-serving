@@ -1,6 +1,6 @@
 # Combined Benchmark & Evaluation Report
 **Routed Multi-Adapter LLM Serving System**
-*Generated: 2026-09-17 01:20:55*
+*Generated: 2026-09-17 02:17:51*
 
 ---
 
@@ -16,9 +16,9 @@ This report presents empirical validation of the two central hypotheses of the R
 
 | Task / Domain | Primary Correctness Metric | Zero-Shot Baseline | Tuned LoRA Adapter | Specialization Delta ($\Delta$) | Adapter Size on Disk | P50 Request Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SQL Generation** | Exact Match Rate (SQLite) | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | 211.69 ms |
-| **JSON Extraction** | Schema Validity Rate | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | 211.69 ms |
-| **Python Code** | Unit Assertion Pass@1 | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | 211.69 ms |
+| **SQL Generation** | Exact Match Rate (SQLite) | `90.0%` (54/60) | **`96.67%` (58/60)** | **`+6.67%`** | 15.08 MB | 211.69 ms |
+| **JSON Extraction** | Schema Validity Rate | `53.3%` (32/60) | **`100.0%` (60/60)** | **`+46.7%`** | 15.08 MB | 211.69 ms |
+| **Python Code** | Unit Assertion Pass@1 | `80.0%` (48/60) | **`100.0%` (60/60)** | **`+20.0%`** | 15.08 MB | 211.69 ms |
 | **Semantic Router** | 4-Way Intent Accuracy | — | **`96.25%`** | — | 133.0 MB (ONNX) | 10.71 ms |
 
 ---

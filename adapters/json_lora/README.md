@@ -62,8 +62,8 @@ Evaluated against 60 held-out test cases using strict Pydantic validation and pe
 
 | Evaluation Metric | Zero-Shot Base (`Qwen2.5-1.5B`) | Tuned `json_lora` Adapter | Specialization Gain ($\Delta$) |
 | :--- | :--- | :--- | :--- |
-| **Schema Validity Rate ($R_{\text{valid}}$)** | 0.0% | **100.0% (60/60)** | **+100.0%** |
-| **Field Accuracy ($A_{\text{field}}$)** | 0.0% | **100.0% (180/180)** | **+100.0%** |
+| **Schema Validity Rate ($R_{\text{valid}}$)** | 53.33% (32/60) | **100.0% (60/60)** | **+46.67%** |
+| **Field Accuracy ($A_{\text{field}}$)** | 95.83% (92/96) | **100.0% (180/180)** | **+4.17%** |
 | **Mean Inference Time** | ~1.6s | **~1.8s** | Strict JSON adherence |
 
 ---

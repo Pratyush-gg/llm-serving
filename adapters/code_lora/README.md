@@ -56,9 +56,9 @@ Evaluated against 60 held-out algorithm problems in an isolated Python subproces
 
 | Evaluation Metric | Zero-Shot Base (`Qwen2.5-1.5B`) | Tuned `code_lora` Adapter | Specialization Gain ($\Delta$) |
 | :--- | :--- | :--- | :--- |
-| **Pass@1 Rate ($P@1$)** | 0.0% | **100.0% (60/60)** | **+100.0%** |
+| **Pass@1 Rate ($P@1$)** | 80.0% (48/60) | **100.0% (60/60)** | **+20.0%** |
 | **Execution Timeouts** | 0 | **0** | 0 |
-| **Execution Errors** | 60 | **0** | -60 |
+| **Execution Errors** | 12 | **0** | -12 |
 | **Mean Inference Time** | ~1.3s | **~1.4s** | Full implementation + docstring |
 
 ---

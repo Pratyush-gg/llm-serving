@@ -2,12 +2,12 @@
   "sql": {
     "total_samples": 60,
     "execution_rate": 1.0,
-    "exact_match_rate": 1.0,
+    "exact_match_rate": 0.9667,
     "executed_count": 60,
-    "matched_count": 60,
-    "eval_time_seconds": 0.0,
-    "backend": "gold",
-    "model_name": "gold_reference"
+    "matched_count": 58,
+    "eval_time_seconds": 25.86,
+    "backend": "peft_lora",
+    "model_name": "sql-adapter"
   },
   "json": {
     "total_samples": 60,
@@ -16,9 +16,9 @@
     "valid_count": 60,
     "field_correct_count": 180,
     "field_total_count": 180,
-    "eval_time_seconds": 0.0,
-    "backend": "gold",
-    "model_name": "gold_reference"
+    "eval_time_seconds": 22.97,
+    "backend": "peft_lora",
+    "model_name": "json-adapter"
   },
   "code": {
     "total_samples": 60,
@@ -26,8 +26,8 @@
     "passed_count": 60,
     "timeout_count": 0,
     "error_count": 0,
-    "eval_time_seconds": 2.15,
-    "backend": "gold",
-    "model_name": "gold_reference"
+    "eval_time_seconds": 17.45,
+    "backend": "peft_lora",
+    "model_name": "code-adapter"
   }
 }

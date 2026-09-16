@@ -3,43 +3,46 @@
   "baseline_metrics": {
     "sql": {
       "total_samples": 60,
-      "execution_rate": 0.0,
-      "exact_match_rate": 0.0,
-      "executed_count": 0,
-      "matched_count": 0,
-      "backend": "mock_zero_shot",
-      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot mock)"
+      "execution_rate": 0.95,
+      "exact_match_rate": 0.9,
+      "executed_count": 57,
+      "matched_count": 54,
+      "gen_time_seconds": 53.41,
+      "backend": "zero_shot_base",
+      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot)"
     },
     "json": {
       "total_samples": 60,
-      "schema_valid_rate": 0.0,
-      "field_accuracy": 0.0,
-      "valid_count": 0,
-      "field_correct_count": 0,
-      "field_total_count": 0,
-      "backend": "mock_zero_shot",
-      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot mock)"
+      "schema_valid_rate": 0.5333,
+      "field_accuracy": 0.9583,
+      "valid_count": 32,
+      "field_correct_count": 92,
+      "field_total_count": 96,
+      "gen_time_seconds": 25.14,
+      "backend": "zero_shot_base",
+      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot)"
     },
     "code": {
       "total_samples": 60,
-      "pass_at_1": 0.0,
-      "passed_count": 0,
+      "pass_at_1": 0.8,
+      "passed_count": 48,
       "timeout_count": 0,
-      "error_count": 60,
-      "backend": "mock_zero_shot",
-      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot mock)"
+      "error_count": 12,
+      "gen_time_seconds": 90.18,
+      "backend": "zero_shot_base",
+      "model_name": "Qwen/Qwen2.5-1.5B-Instruct (zero-shot)"
     }
   },
   "tuned_metrics": {
     "sql": {
       "total_samples": 60,
       "execution_rate": 1.0,
-      "exact_match_rate": 1.0,
+      "exact_match_rate": 0.9667,
       "executed_count": 60,
-      "matched_count": 60,
-      "eval_time_seconds": 0.0,
-      "backend": "gold",
-      "model_name": "gold_reference"
+      "matched_count": 58,
+      "eval_time_seconds": 25.86,
+      "backend": "peft_lora",
+      "model_name": "sql-adapter"
     },
     "json": {
       "total_samples": 60,
@@ -48,9 +51,9 @@
       "valid_count": 60,
       "field_correct_count": 180,
       "field_total_count": 180,
-      "eval_time_seconds": 0.0,
-      "backend": "gold",
-      "model_name": "gold_reference"
+      "eval_time_seconds": 22.97,
+      "backend": "peft_lora",
+      "model_name": "json-adapter"
     },
     "code": {
       "total_samples": 60,
@@ -58,29 +61,29 @@
       "passed_count": 60,
       "timeout_count": 0,
       "error_count": 0,
-      "eval_time_seconds": 2.15,
-      "backend": "gold",
-      "model_name": "gold_reference"
+      "eval_time_seconds": 17.45,
+      "backend": "peft_lora",
+      "model_name": "code-adapter"
     }
   },
   "summary": {
     "sql": {
       "metric": "Exact Match Rate",
-      "baseline": 0.0,
-      "tuned": 1.0,
-      "delta": 1.0
+      "baseline": 0.9,
+      "tuned": 0.9667,
+      "delta": 0.0667
     },
     "json": {
       "metric": "Schema Validity Rate",
-      "baseline": 0.0,
+      "baseline": 0.5333,
       "tuned": 1.0,
-      "delta": 1.0
+      "delta": 0.4667
     },
     "code": {
       "metric": "Pass@1 Rate",
-      "baseline": 0.0,
+      "baseline": 0.8,
       "tuned": 1.0,
-      "delta": 1.0
+      "delta": 0.2
     }
   }
 }

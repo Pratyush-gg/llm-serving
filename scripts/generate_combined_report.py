@@ -40,15 +40,27 @@ def generate_report():
     router_p50 = router_stats.get('p50_latency_ms', latency_stats['routing_latency_ms']['p50'])
     cm = router_stats.get('confusion_matrix', [[20,0,0,0],[0,20,0,0],[0,0,20,0],[0,2,1,17]])
 
+    sql_base = baseline_tuned["baseline_metrics"]["sql"]["exact_match_rate"] * 100
+    sql_tuned = baseline_tuned["tuned_metrics"]["sql"]["exact_match_rate"] * 100
+    sql_delta = sql_tuned - sql_base
+
+    json_base = baseline_tuned["baseline_metrics"]["json"]["schema_valid_rate"] * 100
+    json_tuned = baseline_tuned["tuned_metrics"]["json"]["schema_valid_rate"] * 100
+    json_delta = json_tuned - json_base
+
+    code_base = baseline_tuned["baseline_metrics"]["code"]["pass_at_1"] * 100
+    code_tuned = baseline_tuned["tuned_metrics"]["code"]["pass_at_1"] * 100
+    code_delta = code_tuned - code_base
+
     rows = [
-        ("SQL (Execution)", "0.0%", "100.0%", "+100.0%", "16.4 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
-        ("JSON (Schema)", "0.0%", "100.0%", "+100.0%", "16.4 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
-        ("Code (Pass@1)", "0.0%", "100.0%", "+100.0%", "16.4 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
+        ("SQL (Exact Match)", f"{sql_base:.1f}%", f"{sql_tuned:.1f}%", f"+{sql_delta:.1f}%", "15.1 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
+        ("JSON (Schema)", f"{json_base:.1f}%", f"{json_tuned:.1f}%", f"+{json_delta:.1f}%", "15.1 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
+        ("Code (Pass@1)", f"{code_base:.1f}%", f"{code_tuned:.1f}%", f"+{code_delta:.1f}%", "15.1 MB", f"{latency_stats['total_e2e_latency_ms']['p50']} ms"),
         ("Semantic Router", "N/A", f"{router_acc_pct:.2f}% Acc", "N/A", "133.0 MB (ONNX)", f"{router_p50:.2f} ms"),
     ]
 
     for domain, base_acc, tuned_acc, delta, size, p50 in rows:
-        print(f"{domain:<14} | {base_acc:<16} | {tuned_acc:<15} | {delta:<10} | {size:<14} | {p50:<12}")
+        print(f"{domain:<18} | {base_acc:<16} | {tuned_acc:<15} | {delta:<10} | {size:<14} | {p50:<12}")
     print("=" * 90)
 
     # 2. Build Markdown Document
@@ -70,9 +82,9 @@ This report presents empirical validation of the two central hypotheses of the R
 
 | Task / Domain | Primary Correctness Metric | Zero-Shot Baseline | Tuned LoRA Adapter | Specialization Delta ($\\Delta$) | Adapter Size on Disk | P50 Request Latency |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SQL Generation** | Exact Match Rate (SQLite) | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
-| **JSON Extraction** | Schema Validity Rate | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
-| **Python Code** | Unit Assertion Pass@1 | `0.0%` | **`100.0%`** | **`+100.0%`** | 16.4 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
+| **SQL Generation** | Exact Match Rate (SQLite) | `{sql_base:.1f}%` (54/60) | **`{sql_tuned:.2f}%` (58/60)** | **`+{sql_delta:.2f}%`** | 15.08 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
+| **JSON Extraction** | Schema Validity Rate | `{json_base:.1f}%` (32/60) | **`{json_tuned:.1f}%` (60/60)** | **`+{json_delta:.1f}%`** | 15.08 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
+| **Python Code** | Unit Assertion Pass@1 | `{code_base:.1f}%` (48/60) | **`{code_tuned:.1f}%` (60/60)** | **`+{code_delta:.1f}%`** | 15.08 MB | {latency_stats['total_e2e_latency_ms']['p50']} ms |
 | **Semantic Router** | 4-Way Intent Accuracy | — | **`{router_acc_pct:.2f}%`** | — | 133.0 MB (ONNX) | {router_p50:.2f} ms |
 
 ---

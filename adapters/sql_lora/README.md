@@ -56,8 +56,8 @@ Evaluated against 60 held-out test schemas in an isolated in-memory SQLite sandb
 
 | Evaluation Metric | Zero-Shot Base (`Qwen2.5-1.5B`) | Tuned `sql_lora` Adapter | Specialization Gain ($\Delta$) |
 | :--- | :--- | :--- | :--- |
-| **Execution Rate ($R_{\text{exec}}$)** | 0.0% | **100.0% (60/60)** | **+100.0%** |
-| **Exact Match Rate ($R_{\text{match}}$)** | 0.0% | **100.0% (60/60)** | **+100.0%** |
+| **Execution Rate ($R_{\text{exec}}$)** | 95.0% (57/60) | **100.0% (60/60)** | **+5.0%** |
+| **Exact Match Rate ($R_{\text{match}}$)** | 90.0% (54/60) | **96.67% (58/60)** | **+6.67%** |
 | **Mean Inference Time** | ~1.2s | **~950 ms** | -250 ms |
 
 ---
