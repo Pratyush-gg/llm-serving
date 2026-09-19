@@ -1,10 +1,3 @@
-"""
-Python Code Generation Adapter Correctness Evaluation Suite.
-Evaluates generated Python functions against paired unit assertions in an isolated subprocess.
-Metrics:
-  - pass_at_1: Fraction of generated functions that pass 100% of paired assertions within timeout.
-"""
-
 import json
 import os
 import re

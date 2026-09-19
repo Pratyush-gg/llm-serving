@@ -1,11 +1,3 @@
-"""
-Synthetic dataset generator for JSON extraction adapter.
-Generates 600 training and 60 held-out examples strictly adhering to ExtractionSchema:
-  user: str
-  order_id: str
-  amount: float
-"""
-
 import json
 import random
 import os

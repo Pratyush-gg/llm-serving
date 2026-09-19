@@ -1,12 +1,3 @@
-"""
-Semantic Router Evaluation Suite.
-Evaluates router accuracy, latency, and 4x4 confusion matrix across 80 held-out queries:
-  - 20 SQL held-out prompts
-  - 20 JSON held-out prompts
-  - 20 Code held-out prompts
-  - 20 Base / Out-of-Domain queries
-"""
-
 import json
 import os
 import sys
@@ -47,8 +38,8 @@ def load_task_queries(jsonl_path: str, count: int = 20) -> list[str]:
         records = [json.loads(line) for line in f if line.strip()]
     return [r["prompt"] for r in records[:count]]
 
-def evaluate_router(threshold: float = 0.55, output_json: str = "results/router_eval.json") -> dict:
-    router = get_router(threshold=threshold)
+def evaluate_router(threshold: float = 0.55, output_json: str = "results/router_eval.json", strategy: str = "auto") -> dict:
+    router = get_router(strategy=strategy, threshold=threshold)
 
     # 1. Assemble balanced benchmark dataset (80 queries)
     sql_prompts = load_task_queries("data/sql_holdout.jsonl", 20)
@@ -115,6 +106,7 @@ def evaluate_router(threshold: float = 0.55, output_json: str = "results/router_
     print(f"Average Routing Latency  : {avg_lat:.2f} ms")
 
     summary_results = {
+        "strategy": getattr(router, "strategy_name", strategy),
         "total_queries": len(test_samples),
         "threshold": threshold,
         "accuracy": round(acc, 4),
@@ -127,7 +119,7 @@ def evaluate_router(threshold: float = 0.55, output_json: str = "results/router_
     }
 
     if output_json:
-        os.makedirs(os.path.dirname(output_json) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(output_path := output_json) or ".", exist_ok=True)
         with open(output_json, "w", encoding="utf-8") as f:
             json.dump(summary_results, f, indent=2)
         print(f"\nRouter evaluation results saved to {output_json}")
@@ -135,8 +127,9 @@ def evaluate_router(threshold: float = 0.55, output_json: str = "results/router_
     return summary_results
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Semantic Router")
+    parser = argparse.ArgumentParser(description="Evaluate Semantic / Learned Router")
     parser.add_argument("--threshold", type=float, default=0.55, help="Confidence cutoff threshold")
+    parser.add_argument("--strategy", type=str, default="auto", help="Router strategy ('centroid', 'learned', or 'auto')")
     parser.add_argument("--output", type=str, default="results/router_eval.json", help="Output JSON path")
     args = parser.parse_args()
-    evaluate_router(threshold=args.threshold, output_json=args.output)
+    evaluate_router(threshold=args.threshold, output_json=args.output, strategy=args.strategy)

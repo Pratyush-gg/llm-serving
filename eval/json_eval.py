@@ -1,11 +1,3 @@
-"""
-JSON Extraction Adapter Correctness Evaluation Suite.
-Evaluates generated JSON against Pydantic ExtractionSchema and checks field-level accuracy.
-Metrics:
-  - schema_valid_rate: Fraction of generated responses that parse as valid JSON conforming to schema.
-  - field_accuracy: Accuracy across expected fields (user, order_id, amount) on valid responses.
-"""
-
 import json
 import os
 import re

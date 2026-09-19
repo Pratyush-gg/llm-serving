@@ -1,11 +1,3 @@
-"""
-Unified Correctness Evaluation Runner.
-Executes correctness evaluation across SQL, JSON, and Code held-out sets.
-Supports multiple generation backends:
-  1. gold: Evaluates against gold reference completions (100% sanity baseline).
-  2. endpoint: Queries an OpenAI-compatible endpoint (vLLM or FastAPI gateway).
-"""
-
 import json
 import os
 import time

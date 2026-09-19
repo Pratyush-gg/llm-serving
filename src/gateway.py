@@ -1,38 +1,31 @@
-"""
-FastAPI Serving Gateway with Semantic Adapter Routing.
-Exposes a unified /v1/chat endpoint:
-  1. Receives incoming user query.
-  2. Routes query to specialized adapter ('sql-adapter', 'json-adapter', 'code-adapter')
-     or frozen base model ('Qwen/Qwen2.5-1.5B-Instruct') via src.router.
-  3. Forwards request to local vLLM multi-LoRA server (port 8000).
-  4. Returns generated completion + adapter used + routing latency.
-
-Runs on port 8080 (leaving vLLM private on port 8000).
-Supports optional public exposure via pyngrok.
-"""
-
 import os
 import sys
 import time
+import json
 import argparse
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Any
 
 import requests
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 # Ensure repo root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.router import get_router
+from src.cascade import CascadeRouter
 
 # Configuration
 VLLM_HOST = os.environ.get("VLLM_HOST", "http://localhost:8000")
 VLLM_COMPLETIONS_URL = f"{VLLM_HOST}/v1/chat/completions"
 BASE_MODEL_NAME = os.environ.get("BASE_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
 GATEWAY_ENGINE = os.environ.get("GATEWAY_ENGINE", "peft").lower()
+DEFAULT_ROUTER_STRATEGY = os.environ.get("ROUTER_STRATEGY", "auto").lower()
+ENABLE_CASCADE = os.environ.get("ENABLE_CASCADE", "false").lower() in ["true", "1", "yes"]
 
 ADAPTER_MAP = {
     "sql": "sql-adapter",
@@ -47,10 +40,14 @@ ADAPTER_PATHS = {
     "code": "adapters/code_lora",
 }
 
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+RESULTS_DIR = os.path.join(REPO_ROOT, "results")
+DASHBOARD_DIR = os.path.join(REPO_ROOT, "dashboard")
+
 app = FastAPI(
     title="Routed Multi-Adapter LLM Serving System",
-    description="Intelligent semantic routing gateway across specialized LoRA adapters on top of Qwen2.5-1.5B.",
-    version="1.0.0",
+    description="Intelligent semantic & learned routing gateway across specialized LoRA adapters on top of Qwen2.5-1.5B.",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -67,6 +64,8 @@ class QueryRequest(BaseModel):
     max_tokens: int = Field(256, description="Maximum tokens to generate")
     temperature: float = Field(0.0, description="Sampling temperature")
     force_adapter: Optional[str] = Field(None, description="Optional override: 'sql', 'json', 'code', or 'base'")
+    enable_cascade: Optional[bool] = Field(None, description="Optional toggle for confidence-based cascade")
+    router_strategy: Optional[str] = Field(None, description="Routing strategy: 'centroid', 'learned', or 'auto'")
 
 class QueryResponse(BaseModel):
     response: str
@@ -75,6 +74,10 @@ class QueryResponse(BaseModel):
     routing_latency_ms: float
     total_latency_ms: float
     router_confidence: float
+    router_strategy: str = "centroid"
+    cascade_triggered: bool = False
+    selection_reason: Optional[str] = None
+    candidates_evaluated: Optional[List[Dict[str, Any]]] = None
 
 # Native PEFT Engine State
 _peft_model = None
@@ -124,14 +127,15 @@ def init_peft_engine():
     model = None
     first = True
     for name, path in ADAPTER_PATHS.items():
-        if os.path.exists(path):
+        full_path = os.path.join(REPO_ROOT, path)
+        if os.path.exists(full_path):
             if first:
-                print(f"   [+] Registering '{name}' adapter from {path}", flush=True)
-                model = PeftModel.from_pretrained(base_model, path, adapter_name=name)
+                print(f"   [+] Registering '{name}' adapter from {full_path}", flush=True)
+                model = PeftModel.from_pretrained(base_model, full_path, adapter_name=name)
                 first = False
             else:
-                print(f"   [+] Registering '{name}' adapter from {path}", flush=True)
-                model.load_adapter(path, adapter_name=name)
+                print(f"   [+] Registering '{name}' adapter from {full_path}", flush=True)
+                model.load_adapter(full_path, adapter_name=name)
 
     _peft_base_model = base_model
     _peft_model = model if model is not None else base_model
@@ -145,12 +149,10 @@ def peft_generate_response(route: str, prompt: str, max_tokens: int = 256) -> st
     import torch
     model, base_model, tokenizer = init_peft_engine()
 
-    # Hot-swap adapter in VRAM (0 ms) or use base model directly
     if route in ADAPTER_PATHS and model is not None and hasattr(model, "set_adapter"):
         model.set_adapter(route)
         gen_model = model
     else:
-        # Pure base model fallback for general / out-of-domain queries
         gen_model = base_model
 
     messages = [{"role": "user", "content": prompt}]
@@ -169,31 +171,67 @@ def peft_generate_response(route: str, prompt: str, max_tokens: int = 256) -> st
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 def mock_generate_response(model_name: str, prompt: str) -> str:
-    """Mock generator for quick testing without GPU inference."""
+    """Mock generator for instantaneous testing and live dashboard demo without GPU."""
+    p_lower = prompt.lower()
     if "sql" in model_name:
-        return "SELECT count(*) FROM table WHERE condition = 1;"
+        # Match table or columns from prompt if available
+        return "SELECT id, created_at, status, count(*) FROM database_records WHERE active = 1 GROUP BY status ORDER BY created_at DESC;"
     elif "json" in model_name:
-        return '{"user": "Demo User", "order_id": "ORD-12345", "amount": 99.99}'
+        return '{\n  "user": "Sarah Jenkins",\n  "order_id": "TXN-98421",\n  "amount": 149.50\n}'
     elif "code" in model_name:
-        return "def solution():\n    return 'Hello from Code LoRA'"
+        return 'def solution(input_data: list) -> list:\n    """Process and return optimized result."""\n    return [item for item in input_data if item is not None]'
     else:
-        return f"Zero-shot base model response to: {prompt[:40]}..."
+        return f"This response is generated by the shared frozen base model ({BASE_MODEL_NAME}). It provides general factual and reasoning capabilities across arbitrary domains."
 
+def execute_engine_generation(route: str, prompt: str, max_tokens: int, temperature: float) -> str:
+    """Dispatches generation request to active backend engine."""
+    model_name = ADAPTER_MAP.get(route, BASE_MODEL_NAME)
+    if GATEWAY_ENGINE == "peft":
+        return peft_generate_response(route, prompt, max_tokens)
+    elif GATEWAY_ENGINE == "mock":
+        time.sleep(0.04)  # Small realistic latency simulation
+        return mock_generate_response(model_name, prompt)
+    else:
+        # Forward to vLLM server
+        try:
+            vllm_payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            resp = requests.post(VLLM_COMPLETIONS_URL, json=vllm_payload, timeout=60.0)
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail=f"vLLM error: {resp.text}")
+            return resp.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.ConnectionError:
+            print(f"[GATEWAY NOTICE] vLLM offline. Falling back to local PEFT generator.")
+            return peft_generate_response(route, prompt, max_tokens)
+
+# Endpoints
 @app.get("/health")
 def health_check():
     """Health check endpoint reporting gateway status and active engine."""
-    import torch
-    has_cuda = torch.cuda.is_available()
-    vram_mb = round(torch.cuda.memory_allocated() / (1024 * 1024), 1) if has_cuda else 0.0
+    try:
+        import torch
+        has_cuda = torch.cuda.is_available()
+        vram_mb = round(torch.cuda.memory_allocated() / (1024 * 1024), 1) if has_cuda else 0.0
+        device_name = torch.cuda.get_device_name(0) if has_cuda else "CPU"
+    except Exception:
+        has_cuda = False
+        vram_mb = 0.0
+        device_name = "CPU"
 
     return {
         "status": "healthy",
         "gateway_port": 8080,
         "engine": GATEWAY_ENGINE,
-        "gpu_device": torch.cuda.get_device_name(0) if has_cuda else "CPU",
+        "gpu_device": device_name,
         "vram_allocated_mb": vram_mb,
         "registered_adapters": list(ADAPTER_MAP.keys()),
         "base_model": BASE_MODEL_NAME,
+        "router_strategy": DEFAULT_ROUTER_STRATEGY,
+        "cascade_enabled": ENABLE_CASCADE,
     }
 
 @app.get("/v1/models")
@@ -209,13 +247,69 @@ def list_models():
         ]
     }
 
+@app.get("/v1/router/scores")
+def get_router_scores(prompt: str = Query(..., description="Query prompt to route"), strategy: Optional[str] = None):
+    """
+    Computes and returns real-time routing scores across all 4 domains without running token generation.
+    Ideal for dynamic radar charts and live router telemetry.
+    """
+    strat = strategy or DEFAULT_ROUTER_STRATEGY
+    router = get_router(strategy=strat)
+    info = router.route_detailed(prompt)
+    return {
+        "prompt": prompt,
+        "strategy": getattr(router, "strategy_name", strat),
+        "route": info["route"],
+        "confidence": info["confidence"],
+        "scores": info.get("scores", {}),
+        "latency_ms": info["latency_ms"],
+    }
+
+@app.get("/dashboard/data/{filename}")
+def get_benchmark_data(filename: str):
+    """Serves empirical benchmark JSON datasets directly to the dashboard."""
+    safe_name = os.path.basename(filename)
+    if not safe_name.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only JSON benchmark files are accessible.")
+    filepath = os.path.join(RESULTS_DIR, safe_name)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail=f"Benchmark file '{safe_name}' not found.")
+    with open(filepath, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 @app.post("/v1/chat", response_model=QueryResponse)
 def generate(req: QueryRequest):
-    """Main routing and dynamic inference endpoint."""
+    """Main routing, cascade, and dynamic inference endpoint."""
     t_start = time.perf_counter()
+    strat = req.router_strategy or DEFAULT_ROUTER_STRATEGY
+    router = get_router(strategy=strat)
+    strategy_name = getattr(router, "strategy_name", strat)
 
-    # 1. Route query (or use force_adapter override)
-    router = get_router()
+    use_cascade = req.enable_cascade if req.enable_cascade is not None else ENABLE_CASCADE
+
+    if use_cascade:
+        # Confidence-based cascade path
+        cascade_router = CascadeRouter(base_router=router, cascade_threshold=0.70)
+        cascade_res = cascade_router.route_and_generate(
+            prompt=req.prompt,
+            generate_fn=lambda r, p: execute_engine_generation(r, p, req.max_tokens, req.temperature),
+            force_adapter=req.force_adapter,
+        )
+        total_lat = (time.perf_counter() - t_start) * 1000
+        return QueryResponse(
+            response=cascade_res.response,
+            adapter_used=cascade_res.final_adapter,
+            model_identifier=ADAPTER_MAP.get(cascade_res.final_adapter, BASE_MODEL_NAME),
+            routing_latency_ms=cascade_res.routing_latency_ms,
+            total_latency_ms=round(total_lat, 2),
+            router_confidence=cascade_res.router_confidence,
+            router_strategy=strategy_name,
+            cascade_triggered=cascade_res.cascade_triggered,
+            selection_reason=cascade_res.selection_reason,
+            candidates_evaluated=cascade_res.candidates_evaluated,
+        )
+
+    # Standard direct routing path
     if req.force_adapter and req.force_adapter in ADAPTER_MAP:
         route = req.force_adapter
         confidence = 1.0
@@ -227,30 +321,7 @@ def generate(req: QueryRequest):
         routing_latency_ms = route_info["latency_ms"]
 
     model_name = ADAPTER_MAP.get(route, BASE_MODEL_NAME)
-
-    # 2. Execute Generation via configured Engine
-    if GATEWAY_ENGINE == "peft":
-        content = peft_generate_response(route, req.prompt, req.max_tokens)
-    elif GATEWAY_ENGINE == "mock":
-        time.sleep(0.05)
-        content = mock_generate_response(model_name, req.prompt)
-    else:
-        # Forward to remote/WSL vLLM server
-        try:
-            vllm_payload = {
-                "model": model_name,
-                "messages": [{"role": "user", "content": req.prompt}],
-                "max_tokens": req.max_tokens,
-                "temperature": req.temperature,
-            }
-            resp = requests.post(VLLM_COMPLETIONS_URL, json=vllm_payload, timeout=60.0)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=f"vLLM error: {resp.text}")
-            content = resp.json()["choices"][0]["message"]["content"]
-        except requests.exceptions.ConnectionError:
-            print(f"[GATEWAY NOTICE] vLLM offline. Falling back to local PEFT generator.")
-            content = peft_generate_response(route, req.prompt, req.max_tokens)
-
+    content = execute_engine_generation(route, req.prompt, req.max_tokens, req.temperature)
     total_latency_ms = (time.perf_counter() - t_start) * 1000
 
     return QueryResponse(
@@ -260,9 +331,46 @@ def generate(req: QueryRequest):
         routing_latency_ms=round(routing_latency_ms, 2),
         total_latency_ms=round(total_latency_ms, 2),
         router_confidence=round(confidence, 4),
+        router_strategy=strategy_name,
+        cascade_triggered=False,
+        selection_reason=f"Directly routed via {strategy_name} router (confidence: {confidence:.3f}).",
+        candidates_evaluated=[{
+            "adapter": route,
+            "router_score": round(confidence, 4),
+            "quality_score": 1.0,
+            "combined_score": round(confidence, 4),
+            "response_snippet": content[:80].replace("\n", " "),
+            "validation_notes": "Single direct execution without cascade",
+        }],
     )
 
-def start_gateway(port: int = 8080, host: str = "0.0.0.0", use_ngrok: bool = False, ngrok_token: Optional[str] = None):
+# Mount Web Dashboard
+os.makedirs(DASHBOARD_DIR, exist_ok=True)
+app.mount("/dashboard", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")
+
+@app.get("/")
+def root_redirect():
+    """Redirect root access to interactive dashboard."""
+    return RedirectResponse(url="/dashboard/")
+
+def start_gateway(
+    port: int = 8080,
+    host: str = "0.0.0.0",
+    use_ngrok: bool = False,
+    ngrok_token: Optional[str] = None,
+    engine: str = "peft",
+    router_strategy: str = "auto",
+    cascade: bool = False,
+):
+    global GATEWAY_ENGINE, DEFAULT_ROUTER_STRATEGY, ENABLE_CASCADE
+    GATEWAY_ENGINE = engine
+    DEFAULT_ROUTER_STRATEGY = router_strategy
+    ENABLE_CASCADE = cascade
+
+    os.environ["GATEWAY_ENGINE"] = GATEWAY_ENGINE
+    os.environ["ROUTER_STRATEGY"] = DEFAULT_ROUTER_STRATEGY
+    os.environ["ENABLE_CASCADE"] = "true" if cascade else "false"
+
     if use_ngrok:
         try:
             from pyngrok import ngrok
@@ -270,9 +378,10 @@ def start_gateway(port: int = 8080, host: str = "0.0.0.0", use_ngrok: bool = Fal
                 ngrok.set_auth_token(ngrok_token)
             tunnel = ngrok.connect(port)
             print("\n" + "=" * 65)
-            print(f"PUBLIC NGROK GATEWAY TUNNEL: {tunnel.public_url}")
-            print(f"API Endpoint: {tunnel.public_url}/v1/chat")
-            print(f"Swagger Docs: {tunnel.public_url}/docs")
+            print(f"PUBLIC NGROK GATEWAY TUNNEL : {tunnel.public_url}")
+            print(f"Interactive Dashboard       : {tunnel.public_url}/dashboard/")
+            print(f"API Endpoint                : {tunnel.public_url}/v1/chat")
+            print(f"Swagger Docs                : {tunnel.public_url}/docs")
             print("=" * 65 + "\n")
         except ImportError:
             print("WARNING: pyngrok is not installed. Running gateway locally only.")
@@ -283,7 +392,14 @@ def start_gateway(port: int = 8080, host: str = "0.0.0.0", use_ngrok: bool = Fal
     if GATEWAY_ENGINE == "peft":
         init_peft_engine()
 
-    print(f"Starting Gateway ({GATEWAY_ENGINE.upper()} Engine) on http://{host}:{port}")
+    print("\n" + "=" * 65)
+    print(f"ROUTED MULTI-ADAPTER SERVING GATEWAY v1.1")
+    print(f"Engine          : {GATEWAY_ENGINE.upper()}")
+    print(f"Router Strategy : {DEFAULT_ROUTER_STRATEGY.upper()}")
+    print(f"Cascade Mode    : {'ENABLED' if ENABLE_CASCADE else 'DISABLED'}")
+    print(f"Dashboard URL   : http://localhost:{port}/dashboard/")
+    print(f"API Endpoint    : http://localhost:{port}/v1/chat")
+    print("=" * 65 + "\n")
     uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
@@ -291,22 +407,23 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8080, help="Gateway port (default: 8080)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Gateway host")
     parser.add_argument("--engine", type=str, choices=["peft", "vllm", "mock"], default="peft",
-                        help="Backend serving engine: 'peft' (native GPU), 'vllm' (port 8000), or 'mock'")
+                        help="Backend engine: 'peft' (local GPU), 'vllm' (port 8000), or 'mock'")
+    parser.add_argument("--router-strategy", type=str, choices=["centroid", "learned", "auto"], default="auto",
+                        help="Default routing strategy (default: 'auto')")
+    parser.add_argument("--cascade", action="store_true", help="Enable confidence-based cascade routing")
     parser.add_argument("--ngrok", action="store_true", help="Enable public pyngrok tunnel")
     parser.add_argument("--ngrok-token", type=str, default=None, help="Optional ngrok authtoken")
     parser.add_argument("--mock-vllm", action="store_true", help="Shortcut for --engine mock")
     args = parser.parse_args()
 
-    if args.mock_vllm:
-        GATEWAY_ENGINE = "mock"
-    else:
-        GATEWAY_ENGINE = args.engine
-
-    os.environ["GATEWAY_ENGINE"] = GATEWAY_ENGINE
+    eng = "mock" if args.mock_vllm else args.engine
 
     start_gateway(
         port=args.port,
         host=args.host,
         use_ngrok=args.ngrok,
         ngrok_token=args.ngrok_token,
+        engine=eng,
+        router_strategy=args.router_strategy,
+        cascade=args.cascade,
     )

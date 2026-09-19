@@ -1,11 +1,3 @@
-"""
-Zero-Shot Baseline Evaluation & Comparison Suite.
-Evaluates the frozen base model (Qwen/Qwen2.5-1.5B-Instruct with NO adapter loaded)
-across all three held-out sets, and compares results against tuned adapters.
-
-Saves comparison to results/baseline_vs_tuned.json.
-"""
-
 import json
 import os
 import sys

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-Adapter LLM Serving Dashboard</title>
+  <meta name="description" content="Interactive dashboard for routed multi-adapter LLM serving with semantic routing visualization." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <h1>Multi-Adapter Serving</h1>
+        <span class="tag">v1.1</span>
+        <span class="separator"></span>
+        <span class="status-dot" id="status-dot"></span>
+        <span class="status-text" id="status-text">Connecting...</span>
+      </div>
+      <div class="header-right">
+        <div class="control">
+          <label for="strategy-select">Router</label>
+          <select id="strategy-select">
+            <option value="learned" selected>Learned MLP</option>
+            <option value="centroid">Centroid Cosine</option>
+          </select>
+        </div>
+        <div class="control">
+          <label>Cascade</label>
+          <label class="toggle">
+            <input type="checkbox" id="cascade-toggle" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="playground">Playground</button>
+      <button class="tab" data-tab="benchmarks">Benchmarks</button>
+    </nav>
+
+    <!-- Tab: Playground -->
+    <div class="tab-panel active" id="tab-playground">
+      <div class="playground-grid">
+        <!-- Left: Input + Radar -->
+        <div class="playground-left">
+          <!-- Input -->
+          <div class="card">
+            <div class="card-title">Query</div>
+            <div class="presets">
+              <button class="chip chip-sql" data-preset="sql">SQL</button>
+              <button class="chip chip-json" data-preset="json">JSON</button>
+              <button class="chip chip-code" data-preset="code">Code</button>
+              <button class="chip chip-base" data-preset="base">General</button>
+              <button class="chip chip-edge" data-preset="cascade">Edge Case</button>
+            </div>
+            <textarea id="prompt-input" rows="4" placeholder="Enter your prompt..."></textarea>
+            <div class="input-footer">
+              <div class="inline-controls">
+                <label>Tokens <input type="number" id="max-tokens" value="256" min="32" max="512" step="32" /></label>
+                <label>Temp <input type="number" id="temperature" value="0.0" min="0" max="1" step="0.1" /></label>
+                <label>Force
+                  <select id="force-adapter">
+                    <option value="">Auto</option>
+                    <option value="sql">SQL</option>
+                    <option value="json">JSON</option>
+                    <option value="code">Code</option>
+                    <option value="base">Base</option>
+                  </select>
+                </label>
+              </div>
+              <div class="btn-row">
+                <button class="btn-run" id="btn-run">Run Inference</button>
+                <button class="btn-clear" id="btn-clear">Clear</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Radar -->
+          <div class="card">
+            <div class="card-title-row">
+              <span class="card-title">Router Confidence</span>
+              <span class="mono-sm" id="radar-latency">--</span>
+            </div>
+            <div class="radar-layout">
+              <canvas id="radar-canvas" width="220" height="220"></canvas>
+              <div class="score-bars">
+                <div class="sbar"><span class="sbar-label lb-sql">SQL</span><div class="sbar-track"><div class="sbar-fill sf-sql" id="fill-sql"></div></div><span class="sbar-val" id="val-sql">0%</span></div>
+                <div class="sbar"><span class="sbar-label lb-json">JSON</span><div class="sbar-track"><div class="sbar-fill sf-json" id="fill-json"></div></div><span class="sbar-val" id="val-json">0%</span></div>
+                <div class="sbar"><span class="sbar-label lb-code">Code</span><div class="sbar-track"><div class="sbar-fill sf-code" id="fill-code"></div></div><span class="sbar-val" id="val-code">0%</span></div>
+                <div class="sbar"><span class="sbar-label lb-base">Base</span><div class="sbar-track"><div class="sbar-fill sf-base" id="fill-base"></div></div><span class="sbar-val" id="val-base">0%</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Pipeline + Output -->
+        <div class="playground-right">
+          <!-- Pipeline -->
+          <div class="card">
+            <div class="card-title-row">
+              <span class="card-title">Pipeline</span>
+              <span class="mono-sm" id="pipeline-status">Ready</span>
+            </div>
+            <div class="pipeline">
+              <div class="pnode" id="pn-input"><div class="pn-label">Prompt</div></div>
+              <div class="pconn" id="pc-1"></div>
+              <div class="pnode" id="pn-router"><div class="pn-label">Router</div><div class="pn-sub" id="pn-router-sub">BGE-Small</div></div>
+              <div class="pconn" id="pc-2"></div>
+              <div class="pnode" id="pn-adapter"><div class="pn-label" id="pn-adapter-label">LoRA Hub</div><div class="pn-sub" id="pn-adapter-sub">0ms switch</div></div>
+              <div class="pconn" id="pc-3"></div>
+              <div class="pnode" id="pn-engine"><div class="pn-label">Qwen2.5-1.5B</div><div class="pn-sub">NF4 1.12GB</div></div>
+            </div>
+          </div>
+
+          <!-- Output -->
+          <div class="card output-card">
+            <div class="card-title-row">
+              <span class="card-title">Response</span>
+              <span class="adapter-badge" id="adapter-badge">--</span>
+            </div>
+            <div class="metrics-row">
+              <div class="metric"><span class="metric-k">Route</span><span class="metric-v" id="m-route">--</span></div>
+              <div class="metric"><span class="metric-k">Total</span><span class="metric-v accent" id="m-total">--</span></div>
+              <div class="metric"><span class="metric-k">Conf</span><span class="metric-v" id="m-conf">--</span></div>
+              <div class="metric"><span class="metric-k">Strategy</span><span class="metric-v" id="m-strat">--</span></div>
+            </div>
+
+            <!-- Cascade info (hidden by default) -->
+            <div class="cascade-box" id="cascade-box" style="display:none">
+              <div class="cascade-title">Cascade Activated</div>
+              <p class="cascade-reason" id="cascade-reason"></p>
+              <div class="cand-row" id="cand-container"></div>
+            </div>
+
+            <div class="output-block">
+              <div class="output-bar">
+                <span class="mono-sm" id="output-lang">Output</span>
+                <button class="btn-copy" id="btn-copy">Copy</button>
+              </div>
+              <pre id="response-output">Run a query to see the model response.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div class="card" id="history-card">
+        <div class="card-title-row">
+          <span class="card-title">History</span>
+          <button class="btn-subtle" id="btn-clear-history">Clear</button>
+        </div>
+        <div class="table-wrap">
+          <table class="htable">
+            <thead><tr><th>Time</th><th>Prompt</th><th>Route</th><th>Conf</th><th>Latency</th><th>Cascade</th><th></th></tr></thead>
+            <tbody id="history-body">
+              <tr class="empty-row"><td colspan="7">No queries yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Benchmarks -->
+    <div class="tab-panel" id="tab-benchmarks">
+      <div class="bench-grid">
+        <!-- Correctness -->
+        <div class="card">
+          <div class="card-title-row">
+            <span class="card-title">Correctness: Baseline vs Tuned LoRA</span>
+            <span class="badge-ok">60 Samples / Task</span>
+          </div>
+          <div class="table-wrap">
+            <table class="btable">
+              <thead><tr><th>Task</th><th>Metric</th><th>Baseline</th><th>Tuned</th><th>Delta</th></tr></thead>
+              <tbody>
+                <tr><td>SQL Generation</td><td>Exact Match</td><td>90.0%</td><td class="hl">96.67%</td><td class="delta-pos">+6.67%</td></tr>
+                <tr><td>JSON Extraction</td><td>Schema Valid</td><td>53.33%</td><td class="hl">100.0%</td><td class="delta-pos">+46.67%</td></tr>
+                <tr><td>Python Code</td><td>Pass@1</td><td>80.0%</td><td class="hl">100.0%</td><td class="delta-pos">+20.00%</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- VRAM -->
+        <div class="card">
+          <div class="card-title-row">
+            <span class="card-title">VRAM Conservation (T4 16GB)</span>
+            <span class="badge-blue">-46.2% Total</span>
+          </div>
+          <div class="vram-row">
+            <div class="vram-box vram-alert"><div class="vram-num">14.92 GB</div><div class="vram-sub">3 Separate Models</div><div class="vram-note">1.08 GB free (near OOM)</div></div>
+            <div class="vram-arrow">&#8594;</div>
+            <div class="vram-box vram-ok"><div class="vram-num">8.02 GB</div><div class="vram-sub">Multi-LoRA System</div><div class="vram-note">7.98 GB free</div></div>
+            <div class="vram-box vram-info"><div class="vram-num">1.12 GB</div><div class="vram-sub">RTX 4050 (4-bit)</div><div class="vram-note">4.88 GB free</div></div>
+          </div>
+        </div>
+
+        <!-- Latency -->
+        <div class="card">
+          <div class="card-title-row">
+            <span class="card-title">Latency Breakdown (100 Requests)</span>
+          </div>
+          <div class="table-wrap">
+            <table class="btable">
+              <thead><tr><th>Stage</th><th>Mean</th><th>P50</th><th>P95</th></tr></thead>
+              <tbody>
+                <tr><td>Router (CPU)</td><td>6.05 ms</td><td class="hl">6.12 ms</td><td>8.47 ms</td></tr>
+                <tr><td>Adapter Switch</td><td>8.38 ms</td><td class="hl">10.84 ms</td><td>16.97 ms</td></tr>
+                <tr><td>Generation (128 tok)</td><td>197.88 ms</td><td class="hl">198.27 ms</td><td>231.46 ms</td></tr>
+                <tr class="row-total"><td>End-to-End</td><td>212.32 ms</td><td class="hl">211.69 ms</td><td>243.46 ms</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Confusion Matrix -->
+        <div class="card">
+          <div class="card-title-row">
+            <span class="card-title">Router Confusion Matrix (80 Queries)</span>
+            <span class="badge-ok">96.25% Accuracy</span>
+          </div>
+          <div class="table-wrap">
+            <table class="cm-table">
+              <thead><tr><th>True \ Pred</th><th>SQL</th><th>JSON</th><th>Code</th><th>Base</th></tr></thead>
+              <tbody>
+                <tr><td>SQL</td><td class="cm-hit">20</td><td class="cm-z">0</td><td class="cm-z">0</td><td class="cm-z">0</td></tr>
+                <tr><td>JSON</td><td class="cm-z">0</td><td class="cm-hit">20</td><td class="cm-z">0</td><td class="cm-z">0</td></tr>
+                <tr><td>Code</td><td class="cm-z">0</td><td class="cm-z">0</td><td class="cm-hit">20</td><td class="cm-z">0</td></tr>
+                <tr><td>Base</td><td class="cm-z">0</td><td class="cm-err">2</td><td class="cm-err">1</td><td class="cm-hit">17</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="cm-foot">Specialized domains: 100% (60/60) &middot; Macro F1: 0.9617</div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="footer">
+      <span>Routed Multi-Adapter Serving &middot; Qwen2.5-1.5B &middot; BGE-Small Router</span>
+      <div class="footer-links">
+        <a href="/health" target="_blank">Health</a>
+        <a href="/docs" target="_blank">API Docs</a>
+      </div>
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

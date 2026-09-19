@@ -1,12 +1,3 @@
-"""
-Automated Smoke Test Suite for Serving Gateway.
-Tests health endpoint and validates semantic routing across:
-  - SQL query -> sql-adapter
-  - JSON extraction -> json-adapter
-  - Code generation -> code-adapter
-  - Out-of-domain query -> base model fallback
-"""
-
 import sys
 import json
 import time

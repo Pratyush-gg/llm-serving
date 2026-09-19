@@ -1,9 +1,3 @@
-"""
-Dataset preparation script for SQL adapter.
-Pulls from 'b-mc2/sql-create-context', filters for valid SQLite DDL,
-and splits into 600 training examples and 60 held-out evaluation examples.
-"""
-
 import json
 import os
 import random

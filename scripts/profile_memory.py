@@ -1,12 +1,3 @@
-"""
-Memory Conservation Profiler for Multi-Adapter LLM Serving.
-Compares GPU VRAM footprints:
-  - Separate Full Models (3 independent fine-tuned 1.5B model instances)
-  - Routed Multi-LoRA (1 frozen 1.5B base + 3 dynamic LoRA adapters)
-
-Generates results/memory_profile.png and results/memory_profile.json.
-"""
-
 import json
 import os
 import matplotlib.pyplot as plt

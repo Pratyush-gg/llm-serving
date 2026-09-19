@@ -1,9 +1,3 @@
-"""
-Dataset preparation script for Code adapter.
-Generates 600 training tasks and 60 held-out evaluation tasks with unit-test assertions.
-Every held-out sample is dynamically verified to pass all assertions against its gold solution.
-"""
-
 import json
 import os
 import textwrap

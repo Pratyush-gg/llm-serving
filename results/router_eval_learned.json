@@ -1,0 +1,80 @@
+{
+  "strategy": "learned",
+  "total_queries": 80,
+  "threshold": 0.55,
+  "accuracy": 0.95,
+  "p50_latency_ms": 12.41,
+  "p95_latency_ms": 17.77,
+  "avg_latency_ms": 11.45,
+  "labels": [
+    "sql",
+    "json",
+    "code",
+    "base"
+  ],
+  "confusion_matrix": [
+    [
+      19,
+      0,
+      0,
+      1
+    ],
+    [
+      0,
+      20,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      17,
+      3
+    ],
+    [
+      0,
+      0,
+      0,
+      20
+    ]
+  ],
+  "classification_report": {
+    "sql": {
+      "precision": 1.0,
+      "recall": 0.95,
+      "f1-score": 0.9743589743589743,
+      "support": 20.0
+    },
+    "json": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 20.0
+    },
+    "code": {
+      "precision": 1.0,
+      "recall": 0.85,
+      "f1-score": 0.918918918918919,
+      "support": 20.0
+    },
+    "base": {
+      "precision": 0.8333333333333334,
+      "recall": 1.0,
+      "f1-score": 0.9090909090909091,
+      "support": 20.0
+    },
+    "accuracy": 0.95,
+    "macro avg": {
+      "precision": 0.9583333333333334,
+      "recall": 0.95,
+      "f1-score": 0.9505922005922006,
+      "support": 80.0
+    },
+    "weighted avg": {
+      "precision": 0.9583333333333334,
+      "recall": 0.95,
+      "f1-score": 0.9505922005922006,
+      "support": 80.0
+    }
+  }
+}

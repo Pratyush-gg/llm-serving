@@ -1,16 +1,3 @@
-"""
-System Benchmarking Suite: Latency Breakdown & Profiling.
-Sends 100 benchmark requests through the serving pipeline and records:
-  - Semantic Routing Latency (T_route)
-  - vLLM Adapter Switch & Overhead (T_switch)
-  - Generation / Decoding Latency (T_gen)
-  - Total End-to-End Latency (T_total)
-
-Generates:
-  - results/latency_breakdown.png
-  - results/latency_breakdown.json
-"""
-
 import os
 import sys
 import json

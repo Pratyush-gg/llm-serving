@@ -1,9 +1,3 @@
-"""
-Dataset Validation & Integrity Check for Day 1.
-Verifies line counts, format, train/holdout disjointness,
-and functional execution on holdout sets for SQL, JSON, and Code.
-"""
-
 import json
 import os
 import sqlite3

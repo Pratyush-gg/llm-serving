@@ -1,0 +1,495 @@
+{
+  "total_queries": 16,
+  "cascade_threshold": 0.7,
+  "router_strategy": "learned",
+  "direct_accuracy": 0.375,
+  "cascade_accuracy": 0.9375,
+  "accuracy_delta": 0.5625,
+  "cascade_triggered_count": 16,
+  "cascade_trigger_rate": 1.0,
+  "rescues_count": 9,
+  "direct_p50_latency_ms": 53.47,
+  "cascade_p50_latency_ms": 97.93,
+  "detailed_results": [
+    {
+      "prompt": "Given database schema CREATE TABLE students (id INT, gpa REAL), write a SQL query to list all students with gpa > 3.8;",
+      "expected": "sql",
+      "category": "clear",
+      "direct_route": "sql",
+      "direct_conf": 0.557,
+      "direct_correct": true,
+      "cascade_route": "sql",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'sql' with strong domain validation (quality: 1.0, combined: 0.8008).",
+      "candidates": [
+        {
+          "adapter": "sql",
+          "router_score": 0.5574,
+          "quality_score": 1.0,
+          "combined_score": 0.8008,
+          "response_snippet": "SELECT id, user, amount FROM transactions WHERE amount > 100;",
+          "validation_notes": "Found keywords: SELECT, FROM, WHERE; Balanced parentheses; Valid SQLite statement syntax"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.1851,
+          "quality_score": 0.8,
+          "combined_score": 0.5233,
+          "response_snippet": "def process():     pass",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST"
+        }
+      ]
+    },
+    {
+      "prompt": "Extract the user, order_id, and amount from: Receipt for Michael Scott, Order #PO-99120, Paid: $520.00",
+      "expected": "json",
+      "category": "clear",
+      "direct_route": "base",
+      "direct_conf": 0.497,
+      "direct_correct": false,
+      "cascade_route": "json",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'json' with strong domain validation (quality: 1.0, combined: 0.7737).",
+      "candidates": [
+        {
+          "adapter": "json",
+          "router_score": 0.4972,
+          "quality_score": 1.0,
+          "combined_score": 0.7737,
+          "response_snippet": "{\"user\": \"David Lee\", \"order_id\": \"INV-1002\", \"amount\": 350.25}",
+          "validation_notes": "Valid JSON perfectly matching target schema (user, order_id, amount)"
+        },
+        {
+          "adapter": "sql",
+          "router_score": 0.1995,
+          "quality_score": 1.0,
+          "combined_score": 0.6398,
+          "response_snippet": "SELECT * FROM general_data;",
+          "validation_notes": "Found keywords: SELECT, FROM; Balanced parentheses; Valid SQLite statement syntax"
+        }
+      ]
+    },
+    {
+      "prompt": "Write a Python function: def find_max(numbers: list[int]) -> int that returns the maximum element.",
+      "expected": "code",
+      "category": "clear",
+      "direct_route": "code",
+      "direct_conf": 0.551,
+      "direct_correct": true,
+      "cascade_route": "code",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'code' with strong domain validation (quality: 1.0, combined: 0.798).",
+      "candidates": [
+        {
+          "adapter": "code",
+          "router_score": 0.551,
+          "quality_score": 1.0,
+          "combined_score": 0.798,
+          "response_snippet": "def solution(input_val):     return input_val[::-1]",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST; Contains return statement"
+        },
+        {
+          "adapter": "base",
+          "router_score": 0.1876,
+          "quality_score": 0.9,
+          "combined_score": 0.5794,
+          "response_snippet": "This query addresses general principles and foundational concepts. Historically ",
+          "validation_notes": "Well-formed informative natural language response"
+        }
+      ]
+    },
+    {
+      "prompt": "Explain the biological process of cellular respiration in mitochondria.",
+      "expected": "base",
+      "category": "clear",
+      "direct_route": "base",
+      "direct_conf": 0.552,
+      "direct_correct": true,
+      "cascade_route": "base",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'base' with strong domain validation (quality: 0.9, combined: 0.7434).",
+      "candidates": [
+        {
+          "adapter": "base",
+          "router_score": 0.5521,
+          "quality_score": 0.9,
+          "combined_score": 0.7434,
+          "response_snippet": "This query addresses general principles and foundational concepts. Historically ",
+          "validation_notes": "Well-formed informative natural language response"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.2183,
+          "quality_score": 0.8,
+          "combined_score": 0.5382,
+          "response_snippet": "def process():     pass",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST"
+        }
+      ]
+    },
+    {
+      "prompt": "Write a Python function to parse a SQL connection string and extract database host.",
+      "expected": "code",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.347,
+      "direct_correct": false,
+      "cascade_route": "code",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'code' with strong domain validation (quality: 1.0, combined: 0.706).",
+      "candidates": [
+        {
+          "adapter": "code",
+          "router_score": 0.3466,
+          "quality_score": 1.0,
+          "combined_score": 0.706,
+          "response_snippet": "def solution(input_val):     return input_val[::-1]",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST; Contains return statement"
+        },
+        {
+          "adapter": "sql",
+          "router_score": 0.2759,
+          "quality_score": 1.0,
+          "combined_score": 0.6742,
+          "response_snippet": "SELECT * FROM general_data;",
+          "validation_notes": "Found keywords: SELECT, FROM; Balanced parentheses; Valid SQLite statement syntax"
+        }
+      ]
+    },
+    {
+      "prompt": "Parse the following database log into JSON fields for user and order_id: [AUDIT] user=Alex order_id=ORD-4491 amount=75.50",
+      "expected": "json",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.445,
+      "direct_correct": false,
+      "cascade_route": "json",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'json' with strong domain validation (quality: 1.0, combined: 0.7502).",
+      "candidates": [
+        {
+          "adapter": "json",
+          "router_score": 0.4449,
+          "quality_score": 1.0,
+          "combined_score": 0.7502,
+          "response_snippet": "{\"user\": \"David Lee\", \"order_id\": \"INV-1002\", \"amount\": 350.25}",
+          "validation_notes": "Valid JSON perfectly matching target schema (user, order_id, amount)"
+        },
+        {
+          "adapter": "sql",
+          "router_score": 0.2391,
+          "quality_score": 1.0,
+          "combined_score": 0.6576,
+          "response_snippet": "SELECT * FROM general_data;",
+          "validation_notes": "Found keywords: SELECT, FROM; Balanced parentheses; Valid SQLite statement syntax"
+        }
+      ]
+    },
+    {
+      "prompt": "Given table transactions (user VARCHAR, order_id VARCHAR, amount REAL), write SQL to retrieve records where amount > 100",
+      "expected": "sql",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.445,
+      "direct_correct": false,
+      "cascade_route": "sql",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'sql' with strong domain validation (quality: 1.0, combined: 0.7503).",
+      "candidates": [
+        {
+          "adapter": "sql",
+          "router_score": 0.445,
+          "quality_score": 1.0,
+          "combined_score": 0.7503,
+          "response_snippet": "SELECT id, user, amount FROM transactions WHERE amount > 100;",
+          "validation_notes": "Found keywords: SELECT, FROM, WHERE; Balanced parentheses; Valid SQLite statement syntax"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.2201,
+          "quality_score": 0.8,
+          "combined_score": 0.539,
+          "response_snippet": "def process():     pass",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST"
+        }
+      ]
+    },
+    {
+      "prompt": "Implement a Python def solution(query: str) -> bool to test whether query begins with SELECT.",
+      "expected": "code",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.352,
+      "direct_correct": false,
+      "cascade_route": "sql",
+      "cascade_triggered": true,
+      "cascade_correct": false,
+      "selection_reason": "Cascade confirmed primary candidate 'sql' with strong domain validation (quality: 1.0, combined: 0.7082).",
+      "candidates": [
+        {
+          "adapter": "sql",
+          "router_score": 0.3516,
+          "quality_score": 1.0,
+          "combined_score": 0.7082,
+          "response_snippet": "SELECT id, user, amount FROM transactions WHERE amount > 100;",
+          "validation_notes": "Found keywords: SELECT, FROM, WHERE; Balanced parentheses; Valid SQLite statement syntax"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.294,
+          "quality_score": 1.0,
+          "combined_score": 0.6823,
+          "response_snippet": "def solution(input_val):     return input_val[::-1]",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST; Contains return statement"
+        }
+      ]
+    },
+    {
+      "prompt": "Format the following invoice details as valid JSON: invoice for customer David Lee, invoice_no INV-1002, charge 350.25",
+      "expected": "json",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.496,
+      "direct_correct": false,
+      "cascade_route": "json",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'json' with strong domain validation (quality: 1.0, combined: 0.7733).",
+      "candidates": [
+        {
+          "adapter": "json",
+          "router_score": 0.4962,
+          "quality_score": 1.0,
+          "combined_score": 0.7733,
+          "response_snippet": "{\"user\": \"David Lee\", \"order_id\": \"INV-1002\", \"amount\": 350.25}",
+          "validation_notes": "Valid JSON perfectly matching target schema (user, order_id, amount)"
+        },
+        {
+          "adapter": "sql",
+          "router_score": 0.2029,
+          "quality_score": 1.0,
+          "combined_score": 0.6413,
+          "response_snippet": "SELECT * FROM general_data;",
+          "validation_notes": "Found keywords: SELECT, FROM; Balanced parentheses; Valid SQLite statement syntax"
+        }
+      ]
+    },
+    {
+      "prompt": "Write a SQL query against table orders to count distinct customers who purchased last month.",
+      "expected": "sql",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.458,
+      "direct_correct": false,
+      "cascade_route": "sql",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'sql' with strong domain validation (quality: 1.0, combined: 0.7559).",
+      "candidates": [
+        {
+          "adapter": "sql",
+          "router_score": 0.4575,
+          "quality_score": 1.0,
+          "combined_score": 0.7559,
+          "response_snippet": "SELECT id, user, amount FROM transactions WHERE amount > 100;",
+          "validation_notes": "Found keywords: SELECT, FROM, WHERE; Balanced parentheses; Valid SQLite statement syntax"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.2063,
+          "quality_score": 0.8,
+          "combined_score": 0.5328,
+          "response_snippet": "def process():     pass",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST"
+        }
+      ]
+    },
+    {
+      "prompt": "What are the historical origins of the Renaissance in Florence during the 14th century?",
+      "expected": "base",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.524,
+      "direct_correct": true,
+      "cascade_route": "base",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'base' with strong domain validation (quality: 0.9, combined: 0.7306).",
+      "candidates": [
+        {
+          "adapter": "base",
+          "router_score": 0.5236,
+          "quality_score": 0.9,
+          "combined_score": 0.7306,
+          "response_snippet": "This query addresses general principles and foundational concepts. Historically ",
+          "validation_notes": "Well-formed informative natural language response"
+        },
+        {
+          "adapter": "sql",
+          "router_score": 0.2085,
+          "quality_score": 1.0,
+          "combined_score": 0.6438,
+          "response_snippet": "SELECT * FROM general_data;",
+          "validation_notes": "Found keywords: SELECT, FROM; Balanced parentheses; Valid SQLite statement syntax"
+        }
+      ]
+    },
+    {
+      "prompt": "Could you discuss the philosophical perspectives of Stoicism regarding emotional resilience?",
+      "expected": "base",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.692,
+      "direct_correct": true,
+      "cascade_route": "base",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'base' with strong domain validation (quality: 0.9, combined: 0.8063).",
+      "candidates": [
+        {
+          "adapter": "base",
+          "router_score": 0.6917,
+          "quality_score": 0.9,
+          "combined_score": 0.8063,
+          "response_snippet": "This query addresses general principles and foundational concepts. Historically ",
+          "validation_notes": "Well-formed informative natural language response"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.171,
+          "quality_score": 0.8,
+          "combined_score": 0.517,
+          "response_snippet": "def process():     pass",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST"
+        }
+      ]
+    },
+    {
+      "prompt": "Extract user, order_id, and amount: Shipping notification for Maria Garcia, Order ORD-8812, Amount: $89.00.",
+      "expected": "json",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.428,
+      "direct_correct": false,
+      "cascade_route": "json",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'json' with strong domain validation (quality: 1.0, combined: 0.7424).",
+      "candidates": [
+        {
+          "adapter": "json",
+          "router_score": 0.4276,
+          "quality_score": 1.0,
+          "combined_score": 0.7424,
+          "response_snippet": "{\"user\": \"David Lee\", \"order_id\": \"INV-1002\", \"amount\": 350.25}",
+          "validation_notes": "Valid JSON perfectly matching target schema (user, order_id, amount)"
+        },
+        {
+          "adapter": "sql",
+          "router_score": 0.2404,
+          "quality_score": 1.0,
+          "combined_score": 0.6582,
+          "response_snippet": "SELECT * FROM general_data;",
+          "validation_notes": "Found keywords: SELECT, FROM; Balanced parentheses; Valid SQLite statement syntax"
+        }
+      ]
+    },
+    {
+      "prompt": "def reverse_string(s: str) -> str: write the implementation to reverse input string.",
+      "expected": "code",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.371,
+      "direct_correct": false,
+      "cascade_route": "code",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'code' with strong domain validation (quality: 1.0, combined: 0.7172).",
+      "candidates": [
+        {
+          "adapter": "code",
+          "router_score": 0.3715,
+          "quality_score": 1.0,
+          "combined_score": 0.7172,
+          "response_snippet": "def solution(input_val):     return input_val[::-1]",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST; Contains return statement"
+        },
+        {
+          "adapter": "base",
+          "router_score": 0.2241,
+          "quality_score": 0.9,
+          "combined_score": 0.5958,
+          "response_snippet": "This query addresses general principles and foundational concepts. Historically ",
+          "validation_notes": "Well-formed informative natural language response"
+        }
+      ]
+    },
+    {
+      "prompt": "SELECT department, AVG(salary) FROM employees GROUP BY department HAVING AVG(salary) > 50000;",
+      "expected": "sql",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.343,
+      "direct_correct": false,
+      "cascade_route": "sql",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'sql' with strong domain validation (quality: 1.0, combined: 0.7042).",
+      "candidates": [
+        {
+          "adapter": "sql",
+          "router_score": 0.3427,
+          "quality_score": 1.0,
+          "combined_score": 0.7042,
+          "response_snippet": "SELECT id, user, amount FROM transactions WHERE amount > 100;",
+          "validation_notes": "Found keywords: SELECT, FROM, WHERE; Balanced parentheses; Valid SQLite statement syntax"
+        },
+        {
+          "adapter": "json",
+          "router_score": 0.253,
+          "quality_score": 0.5,
+          "combined_score": 0.3889,
+          "response_snippet": "{\"status\": \"general_response\", \"text\": \"Extracted content\"}",
+          "validation_notes": "Valid JSON object with generic keys: ['status', 'text']"
+        }
+      ]
+    },
+    {
+      "prompt": "How do quantum computers use qubits and superposition compared to classical binary computers?",
+      "expected": "base",
+      "category": "ambiguous",
+      "direct_route": "base",
+      "direct_conf": 0.443,
+      "direct_correct": true,
+      "cascade_route": "base",
+      "cascade_triggered": true,
+      "cascade_correct": true,
+      "selection_reason": "Cascade confirmed primary candidate 'base' with strong domain validation (quality: 0.9, combined: 0.6943).",
+      "candidates": [
+        {
+          "adapter": "base",
+          "router_score": 0.4429,
+          "quality_score": 0.9,
+          "combined_score": 0.6943,
+          "response_snippet": "This query addresses general principles and foundational concepts. Historically ",
+          "validation_notes": "Well-formed informative natural language response"
+        },
+        {
+          "adapter": "code",
+          "router_score": 0.2966,
+          "quality_score": 0.8,
+          "combined_score": 0.5735,
+          "response_snippet": "def process():     pass",
+          "validation_notes": "Contains Python function definition (def); Parses cleanly into valid Python AST"
+        }
+      ]
+    }
+  ]
+}

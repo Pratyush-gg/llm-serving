@@ -3,12 +3,14 @@
 [![Architecture: Multi-LoRA](https://img.shields.io/badge/Architecture-Dynamic%20Multi--LoRA-blue)](https://github.com/)
 [![Base Model: Qwen2.5-1.5B](https://img.shields.io/badge/Base%20Model-Qwen2.5--1.5B--Instruct-purple)](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct)
 [![Hardware: RTX 4050 & T4](https://img.shields.io/badge/Hardware-RTX%204050%20(6GB)%20%7C%20T4%20(16GB)-green)](https://www.nvidia.com/)
-[![Router: FastEmbed BGE-Small](https://img.shields.io/badge/Router-BAAI%2Fbge--small--en--v1.5%20(96.25%25)-orange)](https://huggingface.co/BAAI/bge-small-en-v1.5)
+[![Router: Learned MLP](https://img.shields.io/badge/Router-Learned%20MLP%20(100%25%20Val)-orange)](https://huggingface.co/BAAI/bge-small-en-v1.5)
+[![Cascade: Confidence-Based](https://img.shields.io/badge/Cascade-Confidence%20Based%20(93.8%25)-red)](#)
+[![Dashboard: Interactive](https://img.shields.io/badge/Dashboard-Interactive%20Web%20UI-blueviolet)](#)
 [![Status: Complete & Benchmarked](https://img.shields.io/badge/Status-Complete%20%26%20Benchmarked-success)](#)
 
-A production-grade, memory-conserving LLM serving architecture using **dynamic LoRA adapter routing**. A single frozen base model (`Qwen/Qwen2.5-1.5B-Instruct`) serves multiple specialized domain adapters (SQL generation, structured JSON extraction, and Python code generation), routed via an ultra-low latency CPU semantic classifier (`fastembed` with `BAAI/bge-small-en-v1.5`).
+A production-grade, memory-conserving LLM serving architecture using **dynamic LoRA adapter routing** with a **trained Learned MLP router** and **confidence-based cascade fallback**. A single frozen base model (`Qwen/Qwen2.5-1.5B-Instruct`) serves multiple specialized domain adapters (SQL generation, structured JSON extraction, and Python code generation), routed via a 2-layer neural MLP classifier trained on BGE-Small embeddings (`BAAI/bge-small-en-v1.5`), with an optional cascade strategy that rescues ambiguous queries through domain-specific quality validation.
 
-The system supports **dual serving engines**:
+The system includes an **interactive web dashboard** for real-time inference testing, router visualization, and benchmark exploration, and supports **dual serving engines**:
 1. **Native PEFT Engine (Port 8080):** High-efficiency local serving on consumer GPUs (e.g., NVIDIA GeForce RTX 4050 6GB) using 4-bit NF4 quantization, loading the entire multi-adapter system into just **1.12 GB VRAM** with zero-overhead adapter switching.
 2. **vLLM Multi-LoRA Engine (Port 8000 + 8080 Gateway):** High-throughput cloud/server deployment (e.g., NVIDIA T4 16GB) utilizing PagedAttention and continuous batching across dynamic LoRA weights.
 
@@ -21,17 +23,27 @@ Incoming User Query
   ("SELECT * FROM users WHERE age > 21")
                  │
                  ▼
-    ┌─────────────────────────┐
-    │  Semantic Router (CPU)  │  ◄── BAAI/bge-small-en-v1.5 (ONNX)
-    │  P50 Latency: ~10.7 ms  │  ◄── Centroid cosine similarity (Threshold >= 0.55)
-    │  Accuracy: 96.25%       │
-    └────────────┬────────────┘
+    ┌──────────────────────────────┐
+    │    Learned MLP Router (CPU)  │  ◄── BAAI/bge-small-en-v1.5 (ONNX)
+    │    384 → 128 → 64 → 4       │  ◄── 100% validation accuracy (2,400 samples)
+    │    P50: ~6.12 ms / ~3 ms MLP │  ◄── Fallback: Centroid cosine (threshold ≥ 0.55)
+    └────────────┬─────────────────┘
                  │
-                 ├──► Classified Route: "sql" / "sql-adapter"
-                 │    (or "json", "code", fallback "base")
+                 ├──► High confidence (≥ 0.70) → Direct route
+                 ├──► Low confidence (< 0.70) → Cascade evaluation
+                 │
                  ▼
     ┌────────────────────────────────────────────────────────┐
-    │             Serving Gateway (Port 8080)                │
+    │  Confidence-Based Cascade (Optional)                   │
+    │  - Top-2 candidate adapters evaluated                  │
+    │  - Domain quality scoring (SQL/JSON/Code validators)   │
+    │  - Combined: 0.45 × RouterScore + 0.55 × QualityScore  │
+    │  - Rescues 93.8% of ambiguous queries (+56.3% boost)   │
+    └────────────────────────────┬───────────────────────────┘
+                                 │
+                                 ▼
+    ┌────────────────────────────────────────────────────────┐
+    │       Serving Gateway (Port 8080) + Web Dashboard      │
     │  ┌──────────────────────────────────────────────────┐  │
     │  │  Shared Frozen Base: Qwen2.5-1.5B-Instruct       │  │
     │  │  - 4-bit NF4 (Local RTX 4050): 1.12 GB VRAM      │  │
@@ -42,10 +54,11 @@ Incoming User Query
     │  │  ► code_lora  (15.08 MB)  [DORMANT]              │  │
     │  └──────────────────────────────────────────────────┘  │
     │  Engines: Native PEFT (Windows/Linux) or vLLM Batch    │
+    │  Dashboard: http://localhost:8080/dashboard/            │
     └────────────────────────────┬───────────────────────────┘
                                  │
                                  ▼
-         Streamed / JSON Output + Router Metadata + Latency
+         JSON Output + Router Scores + Cascade Audit + Latency
 ```
 
 ---
@@ -132,6 +145,10 @@ routed-multi-adapter-serving/
 │   ├── sql_lora/              # SQL generation adapter (15.08 MB)
 │   ├── json_lora/             # JSON extraction adapter (15.08 MB)
 │   └── code_lora/             # Python code adapter (15.08 MB)
+├── dashboard/                 # Interactive web dashboard (served at /dashboard/)
+│   ├── index.html             # Dashboard layout & structure
+│   ├── style.css              # Clean dark theme styles
+│   └── app.js                 # Live/mock dual-mode client logic
 ├── data/                      # 600 train / 60 holdout samples per task
 │   ├── sql_train.jsonl / sql_holdout.jsonl
 │   ├── json_train.jsonl / json_holdout.jsonl
@@ -141,8 +158,11 @@ routed-multi-adapter-serving/
 │   ├── json_eval.py           # Pydantic schema validation & field accuracy
 │   ├── code_eval.py           # Subprocess unit assertion runner (5s timeout)
 │   ├── router_eval.py         # 4x4 confusion matrix & router benchmarking
+│   ├── eval_cascade.py        # Cascade routing accuracy evaluation
 │   ├── baseline_eval.py       # Zero-shot baseline vs. tuned adapter harness
 │   └── run_eval.py            # Unified test suite CLI
+├── models/                    # Trained router models
+│   └── learned_router.pkl     # MLP classifier (384→128→64→4) + label encoder
 ├── notebooks/                 # Reproducible Jupyter Notebooks
 │   ├── colab_training_runner.ipynb  # 4-bit QLoRA training on GPU
 │   └── colab_serving_runner.ipynb   # vLLM multi-LoRA production serving
@@ -152,6 +172,7 @@ routed-multi-adapter-serving/
 │   ├── router_eval.json
 │   ├── correctness_results.json
 │   ├── baseline_vs_tuned.json
+│   ├── cascade_eval.json      # Cascade benchmark results
 │   └── combined_benchmark_report.md
 ├── scripts/                   # Tooling, data pipelines & benchmarks
 │   ├── prepare_sql_data.py    # Curates sql-create-context dataset
@@ -160,12 +181,14 @@ routed-multi-adapter-serving/
 │   ├── validate_datasets.py   # Dataset integrity & 0% leakage validator
 │   ├── profile_memory.py      # VRAM calculator & chart generator
 │   ├── run_benchmarks.py      # 100-request latency benchmark runner
+│   ├── train_router.py        # Learned MLP router training script
 │   ├── generate_combined_report.py  # Report aggregator
 │   ├── smoke_test_gateway.py  # Automated 4-domain smoke test client
 │   └── demo_cli.py            # Interactive terminal demonstration
 ├── src/                       # Core system source code
-│   ├── router.py              # Semantic intent router (BAAI/bge-small-en-v1.5)
-│   ├── gateway.py             # Serving gateway (FastAPI - PEFT & vLLM engines)
+│   ├── router.py              # Semantic & Learned MLP router (dual strategy)
+│   ├── cascade.py             # Confidence-based cascade routing logic
+│   ├── gateway.py             # Serving gateway (FastAPI + dashboard + cascade)
 │   └── train_loras.py         # QLoRA SFTTrainer training pipeline
 ├── eval_spec.md               # Formal metrics, test protocols & baseline specs
 ├── requirements.txt           # Local client, server & evaluation dependencies
@@ -218,8 +241,14 @@ python eval/baseline_eval.py --mock
 Ideal for local development on consumer GPUs (e.g. RTX 4050/3060/4070). Automatically loads 4-bit base model in 1.12 GB VRAM and registers adapters:
 
 ```bash
+# Standard (centroid router)
 python -m src.gateway --port 8080 --engine peft
+
+# With learned router + cascade (recommended)
+python -m src.gateway --port 8080 --engine peft --router-strategy learned --cascade
 ```
+
+The **interactive dashboard** is available at `http://localhost:8080/dashboard/`.
 
 ### Pathway B: vLLM Multi-LoRA Engine (Linux / Cloud Production)
 Ideal for high-throughput batch serving on cloud instances (e.g. NVIDIA T4 / A10G):
@@ -238,17 +267,77 @@ python3 -m vllm.entrypoints.openai.api_server \
     --port 8000
 
 # 2. Start Gateway connected to vLLM
-python -m src.gateway --port 8080 --engine vllm --vllm-url http://localhost:8000/v1
+python -m src.gateway --port 8080 --engine vllm
 ```
 
-### Pathway C: Mock Mode (CPU-only / CI Testing)
+### Pathway C: Mock Mode (CPU-only / CI Testing / Dashboard Demo)
 ```bash
-python -m src.gateway --port 8080 --mock-vllm
+python -m src.gateway --port 8080 --mock-vllm --cascade
 ```
 
 ---
 
-## 8. Verifying Gateway with Smoke Test
+## 8. Interactive Web Dashboard
+
+The serving system includes a clean, minimal **interactive web dashboard** served directly from the gateway at `http://localhost:8080/dashboard/`.
+
+### Dashboard Tabs:
+
+**Playground:**
+- One-click preset prompts for SQL, JSON, Code, General, and Edge Case queries
+- Configurable token limit, temperature, and forced adapter override
+- Real-time Canvas 2D radar chart showing per-adapter confidence distribution
+- Animated pipeline visualization: Prompt → Router → LoRA Adapter → Qwen2.5 Engine
+- Cascade audit panel showing candidate evaluations and quality scores when triggered
+- Request history table with re-run buttons
+
+**Benchmarks:**
+- Correctness comparison table (Baseline vs Tuned LoRA across 3 tasks)
+- VRAM conservation breakdown (14.92 GB → 8.02 GB on T4, 1.12 GB on RTX 4050)
+- Latency percentile breakdown (100 requests)
+- Router confusion matrix (80 queries, 96.25% accuracy)
+
+### Dual Operation Mode:
+The dashboard seamlessly operates in **Live** mode (connected to running gateway) or **Offline Mock** mode (standalone demo without GPU).
+
+---
+
+## 9. Advanced Routing Strategies
+
+### 1. Learned Router (2-Layer Neural MLP Classifier)
+In addition to the baseline centroid-cosine router, the system features a **trained 2-layer MLP classifier** (`384 → 128 → 64 → 4`) trained on BGE-small embeddings across 2,400 samples (600 SQL, 600 JSON, 600 Code, 600 Base):
+* **Validation Accuracy:** **100.0% (360/360)**
+* **Zero False Adapter Activations:** Correctly identifies 100% of out-of-domain / base queries without false activations.
+* **Inference Latency:** **~3.0 ms** on CPU (FastEmbed + ONNX Runtime).
+* **Train Command:**
+  ```bash
+  python scripts/train_router.py
+  ```
+* **Evaluation Command:**
+  ```bash
+  python eval/router_eval.py --strategy learned --output results/router_eval_learned.json
+  ```
+
+### 2. Confidence-Based Cascade Routing Strategy
+When the primary router confidence falls below the uncertainty threshold ($\tau < 0.70$) or the top-2 margin is narrow ($\Delta \le 0.15$):
+1. **Dual Candidate Evaluation:** Identifies top-2 candidate adapters.
+2. **Domain Quality Scoring:** Runs lightweight rule-based validators:
+   * **SQL:** SQLite syntax completeness check (`sqlite3.complete_statement`) and balanced parentheses.
+   * **JSON:** Strict Pydantic / JSON schema conformity against expected extraction fields (`user`, `order_id`, `amount`).
+   * **Python Code:** Valid Python AST parsing (`ast.parse`) and function definition verification (`def`).
+3. **Combined Decision Function:** Ranks candidates by $0.45 \times \text{RouterScore} + 0.55 \times \text{DomainQualityScore}$.
+4. **Empirical Results on Ambiguous / Composite Queries:**
+   * **Direct Routing Accuracy:** `37.5%` (6/16)
+   * **Cascade Routing Accuracy:** **`93.8%` (15/16) (+56.3% accuracy boost)**
+   * **Misroutes Rescued:** 9 out of 10 ambiguous cases successfully corrected.
+* **Evaluation Command:**
+  ```bash
+  python eval/eval_cascade.py --strategy auto --output results/cascade_eval.json
+  ```
+
+---
+
+## 10. Verifying Gateway with Smoke Test
 
 While the gateway is running on port 8080, run the automated 4-domain smoke test:
 
@@ -289,44 +378,63 @@ Base (Gen)   | base     | base      | 0.5142 |  6.3 ms | 820 ms  | PASS [OK]
 
 ---
 
-## 9. API Usage Examples
+## 11. API Usage Examples
 
-### PowerShell (Windows)
-```powershell
-# Text-to-SQL Query
-$Body = @{
-    prompt = "Given table users (id INT, age INT, active BOOL), write a SQL query to return all active users over 25."
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri "http://localhost:8080/generate" -Method Post -ContentType "application/json" -Body $Body
-```
-
-### Bash cURL (Linux / macOS)
-```bash
-curl -X POST http://localhost:8080/generate \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Extract user, order_id, and amount from: Order #TXN-98421 for Sarah Jenkins totaling $149.50"}'
-```
+All inference requests go through the `/v1/chat` endpoint:
 
 ### Python Client
 ```python
 import requests
 
+# Standard inference (router auto-selects adapter)
 response = requests.post(
-    "http://localhost:8080/generate",
-    json={"prompt": "Write a Python function: def is_palindrome(s: str) -> bool:"}
+    "http://localhost:8080/v1/chat",
+    json={
+        "prompt": "Write a SQL query to find the top 5 customers by total order amount.",
+        "max_tokens": 256,
+        "temperature": 0.0,
+    }
 )
 
 result = response.json()
-print("Selected Adapter :", result["adapter_used"])
+print("Selected Adapter :", result["adapter_used"])          # "sql"
+print("Router Strategy  :", result["router_strategy"])        # "learned"
+print("Confidence       :", result["router_confidence"])      # 0.91
 print("Routing Latency  :", result["routing_latency_ms"], "ms")
-print("Response:\n", result["text"])
+print("Total Latency    :", result["total_latency_ms"], "ms")
+print("Cascade Triggered:", result["cascade_triggered"])      # False
+print("Response:\n", result["response"])
+
+# With cascade enabled and forced strategy
+response = requests.post(
+    "http://localhost:8080/v1/chat",
+    json={
+        "prompt": "Create a database migration script in Python.",
+        "enable_cascade": True,
+        "router_strategy": "learned",
+    }
+)
 ```
+
+### Bash cURL (Linux / macOS)
+```bash
+curl -X POST http://localhost:8080/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Extract user, order_id, and amount from: Order #TXN-98421 for Sarah Jenkins totaling $149.50"}'
+```
+
+### Router Scores Only (No Generation)
+```bash
+curl "http://localhost:8080/v1/router/scores?prompt=Write+a+SQL+query+to+get+all+users"
+```
+
+Returns per-adapter confidence scores without running token generation — useful for router telemetry and visualization.
 
 ---
 
-## 10. Evaluation & Empirical Reports
+## 12. Evaluation & Empirical Reports
 
 For detailed specifications and empirical benchmark logs, see:
 * **[eval_spec.md](eval_spec.md)**: Formal evaluation specification, sandbox design, and correctness protocols.
 * **[results/combined_benchmark_report.md](results/combined_benchmark_report.md)**: Comprehensive empirical evaluation report.
+* **[results/cascade_eval.json](results/cascade_eval.json)**: Cascade routing benchmark (93.8% accuracy on ambiguous queries).

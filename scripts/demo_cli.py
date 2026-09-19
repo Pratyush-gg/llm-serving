@@ -1,9 +1,3 @@
-"""
-Interactive CLI Demo for Routed Multi-Adapter LLM Serving System.
-Allows interactive typing or automated demo queries to showcase real-time
-semantic routing, confidence scoring, adapter selection, and inference.
-"""
-
 import sys
 import os
 import time

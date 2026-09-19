@@ -1,13 +1,3 @@
-"""
-QLoRA Training Pipeline for Routed Multi-Adapter Serving System.
-Trains specialized rank-16 LoRA adapters for:
-  - sql  -> ./adapters/sql_lora
-  - json -> ./adapters/json_lora
-  - code -> ./adapters/code_lora
-
-Optimized for NVIDIA T4 GPU (16GB VRAM) on Google Colab or Kaggle.
-"""
-
 import os
 import sys
 import json

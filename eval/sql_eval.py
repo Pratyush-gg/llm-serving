@@ -1,11 +1,3 @@
-"""
-SQL Adapter Correctness Evaluation Suite.
-Evaluates generated SQL against holdout schemas in an isolated SQLite database.
-Metrics:
-  - execution_rate: Fraction of generated SQL queries that execute without error.
-  - exact_match_rate: Fraction of generated SQL whose result set exactly matches the gold SQL result set.
-"""
-
 import json
 import os
 import re

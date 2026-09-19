@@ -1,0 +1,16 @@
+{
+  "model_file": "learned_router.pkl",
+  "embedding_model": "BAAI/bge-small-en-v1.5",
+  "architecture": "MLP(384 -> 128 -> 64 -> 4)",
+  "classes": [
+    "sql",
+    "json",
+    "code",
+    "base"
+  ],
+  "num_train_samples": 2040,
+  "num_val_samples": 360,
+  "validation_accuracy": 1.0,
+  "iterations": 17,
+  "training_time_sec": 1.0
+}

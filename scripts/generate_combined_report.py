@@ -1,16 +1,3 @@
-"""
-Combined Correctness & Efficiency Report Generator.
-Aggregates:
-  - Correctness metrics (baseline vs. tuned)
-  - Memory conservation metrics
-  - Latency breakdown statistics
-  - Router classification accuracy
-
-Generates:
-  - results/combined_benchmark_report.md
-  - Centerpiece evaluation matrix in terminal
-"""
-
 import json
 import os
 from datetime import datetime
