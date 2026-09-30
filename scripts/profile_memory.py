@@ -1,126 +1,204 @@
-import json
+"""
+Measure real GPU memory of the routed multi-LoRA engine (base model + 3 adapters).
+
+Stages measured with torch.cuda memory statistics:
+  1. after loading the 4-bit NF4 base model
+  2. after registering the LoRA adapters
+  3. peak during generation with each adapter (and the plain base model)
+
+The comparison against "3 separate fine-tuned models" is NOT measured: it is estimated as
+3 x the measured base-model weight memory and is labelled as an estimate in the output.
+"""
 import os
-import matplotlib.pyplot as plt
+import sys
+import json
+import time
+import argparse
+import platform
 
-def calculate_memory_profiles() -> dict:
-    # Qwen2.5-1.5B has ~1.54B parameters
-    # In FP16 (2 bytes per parameter):
-    base_model_weights_gb = (1.543 * 10**9 * 2) / (1024**3)  # ~2.87 GB
-    lora_adapter_weights_gb = 0.016  # ~16 MB per rank-16 adapter
-    vllm_cuda_overhead_gb = 0.60    # PyTorch/CUDA runtime context
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-    # 1. Architecture A: 3 Separate Fine-Tuned Models Loaded Concurrently
-    num_models = 3
-    separate_weights_gb = base_model_weights_gb * num_models  # ~8.62 GB
-    separate_kv_cache_gb = 1.5 * num_models                  # ~4.5 GB (1.5 GB per instance)
-    separate_overhead_gb = vllm_cuda_overhead_gb * num_models # ~1.8 GB
-    separate_total_gb = separate_weights_gb + separate_kv_cache_gb + separate_overhead_gb  # ~14.92 GB
+from src import local_cache  # noqa: F401  (keep caches inside the repo; must precede ML imports)
 
-    # 2. Architecture B: Routed Multi-LoRA (Shared Base + 3 Adapters)
-    multilora_base_weights_gb = base_model_weights_gb        # ~2.87 GB
-    multilora_adapters_gb = lora_adapter_weights_gb * 3      # ~0.048 GB (48 MB)
-    multilora_shared_kv_cache_gb = 4.5                       # Shared dynamic paged KV-cache pool
-    multilora_overhead_gb = vllm_cuda_overhead_gb            # Single runtime context (0.6 GB)
-    multilora_total_gb = multilora_base_weights_gb + multilora_adapters_gb + multilora_shared_kv_cache_gb + multilora_overhead_gb # ~8.02 GB
+MB = 1024 * 1024
 
-    weights_savings_pct = ((separate_weights_gb - (multilora_base_weights_gb + multilora_adapters_gb)) / separate_weights_gb) * 100
-    total_savings_pct = ((separate_total_gb - multilora_total_gb) / separate_total_gb) * 100
+# Chart colors (reference palette: series slot 1, neutral for the estimate, text inks, surface).
+C_MEASURED = "#2a78d6"
+C_ESTIMATE = "#b9b8b3"
+C_TEXT = "#0b0b0b"
+C_TEXT_2 = "#52514e"
+C_GRID = "#e4e3df"
+C_SURFACE = "#fcfcfb"
 
-    profile = {
-        "model_architecture": "Qwen/Qwen2.5-1.5B-Instruct (FP16)",
-        "num_adapters": 3,
-        "separate_models": {
-            "model_weights_gb": round(separate_weights_gb, 2),
-            "kv_cache_gb": round(separate_kv_cache_gb, 2),
-            "runtime_overhead_gb": round(separate_overhead_gb, 2),
-            "total_vram_gb": round(separate_total_gb, 2),
-        },
-        "multi_lora_system": {
-            "base_model_weights_gb": round(multilora_base_weights_gb, 2),
-            "adapters_total_gb": round(multilora_adapters_gb, 3),
-            "kv_cache_gb": round(multilora_shared_kv_cache_gb, 2),
-            "runtime_overhead_gb": round(multilora_overhead_gb, 2),
-            "total_vram_gb": round(multilora_total_gb, 2),
-        },
-        "metrics": {
-            "weights_reduction_percent": round(weights_savings_pct, 1),
-            "total_vram_savings_percent": round(total_savings_pct, 1),
-            "vram_headroom_on_t4_gb": round(16.0 - multilora_total_gb, 2),
-        }
+DEFAULT_PROMPTS = {
+    "sql": ("data/sql_holdout.jsonl", "prompt"),
+    "json": ("data/json_holdout.jsonl", "prompt"),
+    "code": ("data/code_holdout.jsonl", "prompt"),
+}
+BASE_PROMPT = "Explain how vaccines train the immune system, in two short paragraphs."
+
+
+def first_prompt(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.loads(f.readline())["prompt"]
+
+
+def gpu_stats(torch) -> dict:
+    free, total = torch.cuda.mem_get_info()
+    return {
+        "allocated_mb": round(torch.cuda.memory_allocated() / MB, 1),
+        "reserved_mb": round(torch.cuda.memory_reserved() / MB, 1),
+        "device_used_mb": round((total - free) / MB, 1),  # includes CUDA context and other processes
     }
-    return profile
 
-def generate_memory_chart(profile: dict, output_image: str = "results/memory_profile.png"):
-    sep = profile["separate_models"]
-    lora = profile["multi_lora_system"]
 
-    categories = ["3 Separate Fine-Tuned Models\n(Dedicated Instances)", "Routed Multi-LoRA System\n(Shared Base + 3 Adapters)"]
-    weights = [sep["model_weights_gb"], lora["base_model_weights_gb"] + lora["adapters_total_gb"]]
-    kv_cache = [sep["kv_cache_gb"], lora["kv_cache_gb"]]
-    overhead = [sep["runtime_overhead_gb"], lora["runtime_overhead_gb"]]
+def profile(max_new_tokens: int) -> dict:
+    import torch
+    import transformers
+    import peft
+    import src.gateway as gateway
 
-    plt.style.use("seaborn-v0_8-whitegrid" if "seaborn-v0_8-whitegrid" in plt.style.available else "default")
-    fig, ax = plt.subplots(figsize=(9, 6), dpi=300)
+    if not torch.cuda.is_available():
+        raise SystemExit("A CUDA GPU is required to measure VRAM.")
 
-    # Color scheme
-    c_weights = "#3b82f6"  # Blue
-    c_kv = "#10b981"       # Green
-    c_overhead = "#f59e0b" # Amber
+    torch.cuda.empty_cache()
+    stages = {"before_load": gpu_stats(torch)}
 
-    # Stacked Bars
-    bar_width = 0.5
-    b1 = ax.bar(categories, weights, width=bar_width, label="Model / Adapter Weights", color=c_weights)
-    b2 = ax.bar(categories, kv_cache, width=bar_width, bottom=weights, label="KV-Cache / Context Buffer", color=c_kv)
-    b3 = ax.bar(categories, overhead, width=bar_width, bottom=[w + k for w, k in zip(weights, kv_cache)], label="Runtime / CUDA Context", color=c_overhead)
+    print("Loading base model (4-bit NF4)...", flush=True)
+    base_model, tokenizer = gateway.load_base_model()
+    torch.cuda.synchronize()
+    stages["after_base_model"] = gpu_stats(torch)
 
-    # Add T4 VRAM Capacity Line
-    ax.axhline(y=16.0, color="#ef4444", linestyle="--", linewidth=2, label="NVIDIA T4 Limit (16 GB)")
+    print("Registering LoRA adapters...", flush=True)
+    model = gateway.attach_adapters(base_model)
+    torch.cuda.synchronize()
+    stages["after_adapters"] = gpu_stats(torch)
 
-    # Data value labels on bars
-    totals = [sep["total_vram_gb"], lora["total_vram_gb"]]
-    for i, total in enumerate(totals):
-        ax.text(i, total + 0.3, f"{total:.2f} GB", ha="center", va="bottom", fontsize=11, fontweight="bold")
+    # Serve through the gateway's own generation path so the measurement matches serving.
+    gateway._peft_model, gateway._peft_base_model, gateway._peft_tokenizer = model, base_model, tokenizer
 
-    # Annotate weights savings
-    savings_text = f"Weights Savings:\n-66.1% reduction\n({sep['model_weights_gb']:.1f}GB -> {weights[1]:.1f}GB)"
-    ax.annotate(
-        savings_text,
-        xy=(1, weights[1] / 2),
-        xytext=(1.35, 6),
-        arrowprops=dict(facecolor="#1e293b", shrink=0.05, width=1.5, headwidth=8),
-        fontsize=10,
-        fontweight="semibold",
-        bbox=dict(boxstyle="round,pad=0.5", facecolor="#f1f5f9", edgecolor="#cbd5e1")
-    )
+    generation = {}
+    for route in ["sql", "json", "code", "base"]:
+        prompt = BASE_PROMPT if route == "base" else first_prompt(DEFAULT_PROMPTS[route][0])
+        torch.cuda.reset_peak_memory_stats()
+        result = gateway.peft_generate_response(route, prompt, max_tokens=max_new_tokens)
+        generation[route] = {
+            "peak_allocated_mb": round(torch.cuda.max_memory_allocated() / MB, 1),
+            "peak_reserved_mb": round(torch.cuda.max_memory_reserved() / MB, 1),
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "generation_ms": round(result.generation_ms, 1),
+        }
+        print(f"  {route:<5} peak allocated {generation[route]['peak_allocated_mb']} MB "
+              f"({result.prompt_tokens} prompt + {result.completion_tokens} generated tokens)", flush=True)
 
-    ax.set_ylabel("GPU VRAM Consumption (GB)", fontsize=12, fontweight="semibold")
-    ax.set_title("VRAM Conservation: Separate Full Models vs. Routed Multi-LoRA\n(Qwen2.5-1.5B Instruct on NVIDIA T4)", fontsize=13, fontweight="bold", pad=15)
-    ax.set_ylim(0, 18)
-    ax.legend(loc="upper right", frameon=True, fontsize=10)
-    plt.tight_layout()
+    base_weights_mb = stages["after_base_model"]["allocated_mb"] - stages["before_load"]["allocated_mb"]
+    adapters_mb = stages["after_adapters"]["allocated_mb"] - stages["after_base_model"]["allocated_mb"]
+    peak_mb = max(g["peak_allocated_mb"] for g in generation.values())
 
+    return {
+        "mode": "measured",
+        "measured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "environment": {
+            "gpu": torch.cuda.get_device_name(0),
+            "gpu_total_mb": round(torch.cuda.mem_get_info()[1] / MB, 1),
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "peft": peft.__version__,
+            "python": platform.python_version(),
+            "base_model": gateway.BASE_MODEL_NAME,
+            "quantization": "bitsandbytes 4-bit NF4, double quant",
+            "max_new_tokens": max_new_tokens,
+        },
+        "stages": stages,
+        "generation_peaks": generation,
+        "summary": {
+            "base_model_weights_mb": round(base_weights_mb, 1),
+            "three_adapters_mb": round(adapters_mb, 1),
+            "multi_lora_resident_mb": round(base_weights_mb + adapters_mb, 1),
+            "multi_lora_peak_during_generation_mb": peak_mb,
+        },
+        "estimate_three_separate_models": {
+            "label": "ESTIMATE - not measured",
+            "method": "3 x measured base-model weight memory (each separate model = base with one merged adapter, same size in NF4)",
+            "weights_mb": round(3 * base_weights_mb, 1),
+        },
+    }
+
+
+def generate_memory_chart(profile_data: dict, output_image: str):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    s = profile_data["summary"]
+    est = profile_data["estimate_three_separate_models"]
+    bars = [
+        ("Base model weights (NF4)", s["base_model_weights_mb"], "measured"),
+        ("+ 3 LoRA adapters", s["multi_lora_resident_mb"], "measured"),
+        ("Peak during generation", s["multi_lora_peak_during_generation_mb"], "measured"),
+        ("3 separate models, weights only", est["weights_mb"], "estimate"),
+    ]
+    labels = [b[0] for b in bars][::-1]
+    values = [b[1] for b in bars][::-1]
+    kinds = [b[2] for b in bars][::-1]
+
+    fig, ax = plt.subplots(figsize=(8.5, 3.6), dpi=200)
+    fig.patch.set_facecolor(C_SURFACE)
+    ax.set_facecolor(C_SURFACE)
+
+    for y, (v, kind) in enumerate(zip(values, kinds)):
+        ax.barh(
+            y, v, height=0.55,
+            color=C_MEASURED if kind == "measured" else C_ESTIMATE,
+            hatch=None if kind == "measured" else "///",
+            edgecolor=C_SURFACE if kind == "measured" else C_TEXT_2,
+            linewidth=0 if kind == "measured" else 0.6,
+        )
+        suffix = "" if kind == "measured" else "  (estimate)"
+        ax.text(v + max(values) * 0.01, y, f"{v:,.0f} MB{suffix}", va="center", ha="left",
+                fontsize=9, color=C_TEXT)
+
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels, fontsize=9, color=C_TEXT)
+    ax.set_xlabel("GPU memory allocated by PyTorch (MB)", fontsize=9, color=C_TEXT_2)
+    ax.set_xlim(0, max(values) * 1.25)
+    ax.tick_params(axis="x", colors=C_TEXT_2, labelsize=8)
+    ax.tick_params(axis="y", length=0)
+    ax.grid(axis="x", color=C_GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ["top", "right", "left"]:
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(C_GRID)
+
+    env = profile_data["environment"]
+    ax.set_title(f"Multi-LoRA serving memory on {env['gpu']}", fontsize=11, color=C_TEXT, loc="left")
+    fig.text(0.01, 0.01, "Blue: measured with torch.cuda statistics.  Hatched gray: estimate (3 x measured base weights).",
+             fontsize=7.5, color=C_TEXT_2)
+
+    plt.tight_layout(rect=(0, 0.05, 1, 1))
     os.makedirs(os.path.dirname(output_image) or ".", exist_ok=True)
-    plt.savefig(output_image)
-    plt.close()
-    print(f"Memory conservation chart generated -> {output_image}")
+    plt.savefig(output_image, facecolor=C_SURFACE)
+    plt.close(fig)
+    print(f"Memory chart saved -> {output_image}")
+
 
 def main():
-    profile = calculate_memory_profiles()
-    print("\n" + "=" * 65)
-    print("VRAM PROFILE & CONSERVATION METRICS")
-    print("=" * 65)
-    print(f"Separate Models Footprint : {profile['separate_models']['total_vram_gb']} GB VRAM")
-    print(f"Multi-LoRA Footprint      : {profile['multi_lora_system']['total_vram_gb']} GB VRAM")
-    print(f"Weights Memory Reduction  : {profile['metrics']['weights_reduction_percent']}%")
-    print(f"Remaining T4 Headroom     : {profile['metrics']['vram_headroom_on_t4_gb']} GB free")
-    print("=" * 65 + "\n")
+    parser = argparse.ArgumentParser(description="Measure multi-LoRA GPU memory")
+    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--output-json", type=str, default="results/memory_profile.json")
+    parser.add_argument("--output-image", type=str, default="results/memory_profile.png")
+    args = parser.parse_args()
 
-    output_json = "results/memory_profile.json"
-    with open(output_json, "w", encoding="utf-8") as f:
-        json.dump(profile, f, indent=2)
-    print(f"Profile data saved -> {output_json}")
+    data = profile(args.max_new_tokens)
+    print(json.dumps(data["summary"], indent=2))
 
-    generate_memory_chart(profile)
+    os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
+    with open(args.output_json, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    print(f"Profile saved -> {args.output_json}")
+    generate_memory_chart(data, args.output_image)
+
 
 if __name__ == "__main__":
     main()

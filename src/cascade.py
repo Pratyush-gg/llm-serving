@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 from src.router import get_router
 
+VALID_ROUTES = ("sql", "json", "code", "base")
+
 @dataclass
 class CandidateEvaluation:
     adapter: str
@@ -211,6 +213,9 @@ class CascadeRouter:
         generate_fn: Callable(route: str, prompt: str) -> str
         """
         t_start = time.perf_counter()
+
+        if force_adapter is not None and force_adapter not in VALID_ROUTES:
+            raise ValueError(f"Unknown adapter '{force_adapter}'. Expected one of: {', '.join(VALID_ROUTES)}")
 
         # Direct override
         if force_adapter:

@@ -1,8 +1,12 @@
 import os
 import sys
 import json
+import shutil
 import argparse
 from typing import Dict, List
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.local_cache import HF_LOCAL_FILES_ONLY  # noqa: E402  (keeps caches in the repo; read base model offline)
 
 DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
@@ -10,6 +14,14 @@ TASK_DATA_MAP = {
     "sql": "data/sql_train.jsonl",
     "json": "data/json_train.jsonl",
     "code": "data/code_train.jsonl",
+}
+
+# Validation sets built from unused source rows (scripts/build_validation_sets.py). When present,
+# validation loss is computed every epoch and the best checkpoint is kept.
+TASK_VAL_MAP = {
+    "sql": "data/sql_val.jsonl",
+    "json": "data/json_val.jsonl",
+    "code": "data/code_val.jsonl",
 }
 
 def load_jsonl_dataset(file_path: str) -> List[Dict]:
@@ -57,13 +69,13 @@ def train_adapter(
     max_seq_length: int = 512,
     lora_r: int = 16,
     lora_alpha: int = 32,
+    max_steps: int = -1,
 ):
     import torch
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
-        TrainingArguments,
     )
     from peft import (
         LoraConfig,
@@ -86,7 +98,8 @@ def train_adapter(
 
     # 1. Load Tokenizer
     print("Loading tokenizer...", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True,
+                                              local_files_only=HF_LOCAL_FILES_ONLY)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -114,6 +127,7 @@ def train_adapter(
         torch_dtype=target_dtype if has_cuda else torch.float32,
         device_map=device_map,
         trust_remote_code=True,
+        local_files_only=HF_LOCAL_FILES_ONLY,
     )
 
     if has_cuda:
@@ -136,90 +150,76 @@ def train_adapter(
     train_dataset = format_conversations(raw_records, tokenizer)
     print(f"Prepared {len(train_dataset)} training examples.", flush=True)
 
-    # 6. Configure Training Arguments (Universal compatibility across SFTConfig and TrainingArguments)
-    # Total update steps: (600 / (batch_size * grad_accum)) * epochs = ~150 steps.
-    # 5% warmup is ~8-10 steps. warmup_steps is universally supported across all transformers & trl versions.
-    warmup_steps = max(1, int(epochs * (len(train_dataset) / max(1, batch_size * gradient_accumulation_steps)) * 0.05))
+    val_path = TASK_VAL_MAP.get(task)
+    eval_dataset = None
+    if val_path and os.path.exists(val_path):
+        eval_dataset = format_conversations(load_jsonl_dataset(val_path), tokenizer)
+        print(f"Prepared {len(eval_dataset)} validation examples from {val_path}.", flush=True)
+    else:
+        print(f"WARNING: no validation set for [{task}] ({val_path} missing): training without "
+              "validation loss or best-checkpoint selection.", flush=True)
 
-    training_args = None
-    try:
-        training_args = SFTConfig(
-            output_dir=output_dir,
-            num_train_epochs=epochs,
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            learning_rate=learning_rate,
-            logging_steps=10,
-            save_strategy="no",
-            fp16=use_fp16,
-            bf16=use_bf16,
-            optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
-            warmup_steps=warmup_steps,
-            lr_scheduler_type="cosine",
-            dataset_text_field="text",
-            max_length=max_seq_length,
-            report_to="none",
-        )
-    except Exception as e:
-        print(f"Note: SFTConfig initialization note ({e}). Falling back to TrainingArguments...", flush=True)
-        try:
-            training_args = TrainingArguments(
-                output_dir=output_dir,
-                num_train_epochs=epochs,
-                per_device_train_batch_size=batch_size,
-                gradient_accumulation_steps=gradient_accumulation_steps,
-                learning_rate=learning_rate,
-                logging_steps=10,
-                save_strategy="no",
-                fp16=use_fp16,
-                bf16=use_bf16,
-                optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
-                warmup_steps=warmup_steps,
-                lr_scheduler_type="cosine",
-                report_to="none",
-            )
-        except Exception as e2:
-            print(f"Note: TrainingArguments simplified fallback ({e2})...", flush=True)
-            training_args = TrainingArguments(
-                output_dir=output_dir,
-                num_train_epochs=epochs,
-                per_device_train_batch_size=batch_size,
-                gradient_accumulation_steps=gradient_accumulation_steps,
-                learning_rate=learning_rate,
-                logging_steps=10,
-                save_strategy="no",
-                fp16=use_fp16,
-                bf16=use_bf16,
-                report_to="none",
-            )
+    # With a validation set: evaluate + checkpoint every epoch and restore the lowest-loss epoch.
+    eval_kwargs = dict(
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        save_total_limit=2,
+        per_device_eval_batch_size=batch_size,
+    ) if eval_dataset is not None else dict(save_strategy="no")
+
+    # 6. Training arguments (~150 update steps for 600 examples; 5% warmup)
+    warmup_steps = max(1, int(epochs * (len(train_dataset) / max(1, batch_size * gradient_accumulation_steps)) * 0.05))
+    training_args = SFTConfig(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        logging_steps=10,
+        **eval_kwargs,
+        max_steps=max_steps,
+        fp16=use_fp16,
+        bf16=use_bf16,
+        optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
+        warmup_steps=warmup_steps,
+        lr_scheduler_type="cosine",
+        dataset_text_field="text",
+        max_length=max_seq_length,
+        report_to="none",
+    )
 
     # 7. Initialize SFTTrainer
     print("Initializing SFTTrainer...", flush=True)
-    sft_kwargs = {
-        "model": base_model,
-        "train_dataset": train_dataset,
-        "peft_config": lora_config,
-        "args": training_args,
-    }
-    if not hasattr(training_args, "dataset_text_field"):
-        sft_kwargs["dataset_text_field"] = "text"
-        sft_kwargs["max_seq_length"] = max_seq_length
-
-    try:
-        trainer = SFTTrainer(**sft_kwargs)
-    except TypeError:
-        sft_kwargs.pop("dataset_text_field", None)
-        sft_kwargs.pop("max_seq_length", None)
-        trainer = SFTTrainer(**sft_kwargs)
+    trainer = SFTTrainer(model=base_model, train_dataset=train_dataset, eval_dataset=eval_dataset,
+                         peft_config=lora_config, args=training_args)
 
     # 8. Train
     print(f"Training [{task}] adapter for {epochs} epoch(s)...", flush=True)
     train_result = trainer.train()
 
-    # 9. Save Adapter Weights & Tokenizer
+    # 9. Save Adapter Weights & Tokenizer (with a validation set, this is the best-epoch model)
     print(f"Saving tuned adapter to {output_dir}...", flush=True)
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
+
+    # Keep the loss history next to the adapter and drop intermediate epoch checkpoints.
+    history = {
+        "task": task,
+        "validation_set": val_path if eval_dataset is not None else None,
+        "best_checkpoint": getattr(trainer.state, "best_model_checkpoint", None),
+        "best_eval_loss": getattr(trainer.state, "best_metric", None),
+        "log_history": trainer.state.log_history,
+    }
+    with open(os.path.join(output_dir, "training_log.json"), "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+    for name in os.listdir(output_dir):
+        if name.startswith("checkpoint-"):
+            shutil.rmtree(os.path.join(output_dir, name), ignore_errors=True)
+    if history["best_eval_loss"] is not None:
+        print(f"Best validation loss: {history['best_eval_loss']:.4f} ({history['best_checkpoint']})", flush=True)
 
     adapter_size_mb = get_adapter_size_mb(output_dir)
     print("\n" + "-" * 60, flush=True)
@@ -259,6 +259,8 @@ def main():
                         help="Learning rate")
     parser.add_argument("--max-seq-len", type=int, default=512,
                         help="Maximum sequence length")
+    parser.add_argument("--max-steps", type=int, default=-1,
+                        help="Stop after this many optimizer steps (smoke tests); -1 = full epochs")
     args = parser.parse_args()
 
     print(f"\n[INIT] Starting QLoRA Training Runner for task: [{args.task.upper()}]", flush=True)
@@ -277,6 +279,7 @@ def main():
             gradient_accumulation_steps=args.grad_accum,
             learning_rate=args.lr,
             max_seq_length=args.max_seq_len,
+            max_steps=args.max_steps,
         )
         results.append(res)
 

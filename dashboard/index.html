@@ -115,7 +115,7 @@
               <div class="pconn" id="pc-2"></div>
               <div class="pnode" id="pn-adapter"><div class="pn-label" id="pn-adapter-label">LoRA Hub</div><div class="pn-sub" id="pn-adapter-sub">0ms switch</div></div>
               <div class="pconn" id="pc-3"></div>
-              <div class="pnode" id="pn-engine"><div class="pn-label">Qwen2.5-1.5B</div><div class="pn-sub">NF4 1.12GB</div></div>
+              <div class="pnode" id="pn-engine"><div class="pn-label">Qwen2.5-1.5B</div><div class="pn-sub">NF4 1.1GB</div></div>
             </div>
           </div>
 
@@ -173,32 +173,35 @@
         <!-- Correctness -->
         <div class="card">
           <div class="card-title-row">
-            <span class="card-title">Correctness: Baseline vs Tuned LoRA</span>
-            <span class="badge-ok">60 Samples / Task</span>
+            <span class="card-title">Base Model vs LoRA Adapter</span>
+            <span class="badge-ok">Measured</span>
           </div>
           <div class="table-wrap">
             <table class="btable">
-              <thead><tr><th>Task</th><th>Metric</th><th>Baseline</th><th>Tuned</th><th>Delta</th></tr></thead>
+              <thead><tr><th>Test set (n)</th><th>Metric</th><th>Base</th><th>Adapter</th><th>Diff (95% CI)</th></tr></thead>
               <tbody>
-                <tr><td>SQL Generation</td><td>Exact Match</td><td>90.0%</td><td class="hl">96.67%</td><td class="delta-pos">+6.67%</td></tr>
-                <tr><td>JSON Extraction</td><td>Schema Valid</td><td>53.33%</td><td class="hl">100.0%</td><td class="delta-pos">+46.67%</td></tr>
-                <tr><td>Python Code</td><td>Pass@1</td><td>80.0%</td><td class="hl">100.0%</td><td class="delta-pos">+20.00%</td></tr>
+                <tr><td>SQL, gretel (300)</td><td>Exec. accuracy</td><td>41.0%</td><td class="hl">39.7%</td><td>-1.3 [-7.0, +4.3]</td></tr>
+                <tr><td>JSON in-scope (60)</td><td>Exact match</td><td>53.3%</td><td class="hl">73.3%</td><td class="delta-pos">+20.0 [+6.7, +33.3]</td></tr>
+                <tr><td>JSON paraloq (80)</td><td>Field F1</td><td>44.5%</td><td class="hl">34.7%</td><td>-9.8 [-21.2, +0.8]</td></tr>
+                <tr><td>HumanEval (164)</td><td>Pass@1</td><td>44.5%</td><td class="hl">36.6%</td><td class="delta-neg">-7.9 [-15.8, 0.0]</td></tr>
+                <tr><td>MBPP (257)</td><td>Pass@1</td><td>45.1%</td><td class="hl">50.2%</td><td>+5.1 [-0.4, +10.5]</td></tr>
               </tbody>
             </table>
           </div>
+          <div class="cm-foot">Colored differences are statistically distinguishable from 0 &middot; RTX 4050, natural-language prompts</div>
         </div>
 
         <!-- VRAM -->
         <div class="card">
           <div class="card-title-row">
-            <span class="card-title">VRAM Conservation (T4 16GB)</span>
-            <span class="badge-blue">-46.2% Total</span>
+            <span class="card-title">GPU Memory (RTX 4050, 4-bit NF4)</span>
+            <span class="badge-blue">Measured</span>
           </div>
           <div class="vram-row">
-            <div class="vram-box vram-alert"><div class="vram-num">14.92 GB</div><div class="vram-sub">3 Separate Models</div><div class="vram-note">1.08 GB free (near OOM)</div></div>
+            <div class="vram-box vram-alert"><div class="vram-num">~3,300 MB</div><div class="vram-sub">3 Separate Models</div><div class="vram-note">estimate: 3 x base weights</div></div>
             <div class="vram-arrow">&#8594;</div>
-            <div class="vram-box vram-ok"><div class="vram-num">8.02 GB</div><div class="vram-sub">Multi-LoRA System</div><div class="vram-note">7.98 GB free</div></div>
-            <div class="vram-box vram-info"><div class="vram-num">1.12 GB</div><div class="vram-sub">RTX 4050 (4-bit)</div><div class="vram-note">4.88 GB free</div></div>
+            <div class="vram-box vram-ok"><div class="vram-num">1,125 MB</div><div class="vram-sub">Base + 3 Adapters</div><div class="vram-note">adapters add 25 MB</div></div>
+            <div class="vram-box vram-info"><div class="vram-num">1,144 MB</div><div class="vram-sub">Peak (generating)</div><div class="vram-note">128 new tokens</div></div>
           </div>
         </div>
 
@@ -211,10 +214,10 @@
             <table class="btable">
               <thead><tr><th>Stage</th><th>Mean</th><th>P50</th><th>P95</th></tr></thead>
               <tbody>
-                <tr><td>Router (CPU)</td><td>6.05 ms</td><td class="hl">6.12 ms</td><td>8.47 ms</td></tr>
-                <tr><td>Adapter Switch</td><td>8.38 ms</td><td class="hl">10.84 ms</td><td>16.97 ms</td></tr>
-                <tr><td>Generation (128 tok)</td><td>197.88 ms</td><td class="hl">198.27 ms</td><td>231.46 ms</td></tr>
-                <tr class="row-total"><td>End-to-End</td><td>212.32 ms</td><td class="hl">211.69 ms</td><td>243.46 ms</td></tr>
+                <tr><td>Router (CPU)</td><td>12.0 ms</td><td class="hl">12.6 ms</td><td>19.6 ms</td></tr>
+                <tr><td>Adapter Switch</td><td>8.6 ms</td><td class="hl">5.7 ms</td><td>18.7 ms</td></tr>
+                <tr><td>Generation (max 128 tok)</td><td>2,770 ms</td><td class="hl">1,986 ms</td><td>5,685 ms</td></tr>
+                <tr class="row-total"><td>Server total</td><td>2,792 ms</td><td class="hl">2,010 ms</td><td>5,721 ms</td></tr>
               </tbody>
             </table>
           </div>
@@ -223,21 +226,21 @@
         <!-- Confusion Matrix -->
         <div class="card">
           <div class="card-title-row">
-            <span class="card-title">Router Confusion Matrix (80 Queries)</span>
-            <span class="badge-ok">96.25% Accuracy</span>
+            <span class="card-title">Learned v2 Router Confusion Matrix (166 Test Prompts)</span>
+            <span class="badge-ok">87.4% Accuracy</span>
           </div>
           <div class="table-wrap">
             <table class="cm-table">
               <thead><tr><th>True \ Pred</th><th>SQL</th><th>JSON</th><th>Code</th><th>Base</th></tr></thead>
               <tbody>
-                <tr><td>SQL</td><td class="cm-hit">20</td><td class="cm-z">0</td><td class="cm-z">0</td><td class="cm-z">0</td></tr>
-                <tr><td>JSON</td><td class="cm-z">0</td><td class="cm-hit">20</td><td class="cm-z">0</td><td class="cm-z">0</td></tr>
-                <tr><td>Code</td><td class="cm-z">0</td><td class="cm-z">0</td><td class="cm-hit">20</td><td class="cm-z">0</td></tr>
-                <tr><td>Base</td><td class="cm-z">0</td><td class="cm-err">2</td><td class="cm-err">1</td><td class="cm-hit">17</td></tr>
+                <tr><td>SQL</td><td class="cm-hit">40</td><td class="cm-err">2</td><td class="cm-z">0</td><td class="cm-err">2</td></tr>
+                <tr><td>JSON</td><td class="cm-z">0</td><td class="cm-hit">32</td><td class="cm-z">0</td><td class="cm-z">0</td></tr>
+                <tr><td>Code</td><td class="cm-err">2</td><td class="cm-z">0</td><td class="cm-hit">43</td><td class="cm-z">0</td></tr>
+                <tr><td>Base</td><td class="cm-err">6</td><td class="cm-err">6</td><td class="cm-err">3</td><td class="cm-hit">30</td></tr>
               </tbody>
             </table>
           </div>
-          <div class="cm-foot">Specialized domains: 100% (60/60) &middot; Macro F1: 0.9617</div>
+          <div class="cm-foot">Clear prompts: 100% &middot; Ambiguous: 72.4% &middot; Macro F1: 0.871</div>
         </div>
       </div>
     </div>

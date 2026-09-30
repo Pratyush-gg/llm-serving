@@ -7,17 +7,21 @@ import pickle
 import argparse
 from typing import List, Tuple, Dict
 
-import numpy as np
-from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
-from fastembed import TextEmbedding
-
 # Ensure repo root is on sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, REPO_ROOT)
+
+# Dataset downloads (v2 data) must stay inside the repo; set before importing datasets/fastembed.
+os.environ.setdefault("HF_HUB_CACHE", os.path.join(REPO_ROOT, ".model_cache", "hub"))
+from src import local_cache  # noqa: F401,E402
+
+import numpy as np  # noqa: E402
+from sklearn.neural_network import MLPClassifier  # noqa: E402
+from sklearn.model_selection import train_test_split  # noqa: E402
+from sklearn.metrics import classification_report, confusion_matrix  # noqa: E402
+from fastembed import TextEmbedding  # noqa: E402
 
 ROUTER_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-CACHE_FILE = "data/router_embeddings_cache.npz"
 LABEL_LIST = ["sql", "json", "code", "base"]
 LABEL_TO_INT = {l: i for i, l in enumerate(LABEL_LIST)}
 INT_TO_LABEL = {i: l for i, l in enumerate(LABEL_LIST)}
@@ -154,68 +158,102 @@ def load_jsonl_prompts(filepath: str, max_count: int = 600) -> List[str]:
                 break
     return prompts
 
+# --- v2 training data: varied public prompts (train splits only, disjoint from the test set) ---
+
+JSON_WRAPPERS = [
+    "Extract the {title} information from this {medium} as JSON:\n\n{text}",
+    "Convert the following {medium} into a structured JSON object.\n\n{text}",
+    "{text}\n\nReturn the key fields from the text above as JSON.",
+    "Parse this {medium} and output the data as a JSON object describing the {title}.\n\n{text}",
+    "Give me the {title} details from this text in JSON format:\n{text}",
+    "Read the {medium} below and produce machine-readable JSON.\n\n{text}",
+]
+
+
+def _load_testset_ids(path: str = "data/router_testset.jsonl") -> Dict[str, set]:
+    """Source ids used by the router test set, per source, so training can exclude them."""
+    ids: Dict[str, set] = {}
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                r = json.loads(line)
+                ids.setdefault(r.get("source", "").split(":")[0], set()).add(str(r.get("source_id")))
+    return ids
+
+
+def build_v2_prompts(per_class: int, rng: random.Random) -> Tuple[List[str], List[int]]:
+    from datasets import load_dataset
+
+    test_ids = _load_testset_ids()
+    n_template = min(150, per_class // 4)   # keep some original-template prompts for coverage
+    n_public = per_class - n_template
+
+    # SQL: gretel train split (the test set uses its test split)
+    gretel = load_dataset("gretelai/synthetic_text_to_sql", split="train")
+    idx = rng.sample(range(len(gretel)), n_public)
+    sql = [f"{gretel[i]['sql_context'].strip()}\n\n{gretel[i]['sql_prompt'].strip()}" for i in idx]
+    sql += rng.sample(load_jsonl_prompts("data/sql_train.jsonl", 10_000), n_template)
+
+    # Code: MBPP train/validation/prompt splits (the test set uses its test split)
+    mbpp = []
+    for split in ["train", "validation", "prompt"]:
+        mbpp += [r["text"].strip() for r in load_dataset("google-research-datasets/mbpp", "full", split=split)]
+    code = rng.sample(mbpp, min(n_public, len(mbpp)))
+    code += rng.sample(load_jsonl_prompts("data/code_train.jsonl", 10_000), per_class - len(code))
+
+    # JSON: paraloq documents wrapped in generic instructions + NousResearch json-mode-eval requests
+    paraloq = load_dataset("paraloq/json_data_extraction", split="train")
+    json_prompts = []
+    for i in rng.sample(range(len(paraloq)), min(len(paraloq), n_public - 100)):
+        r = paraloq[i]
+        wrapper = rng.choice(JSON_WRAPPERS)
+        json_prompts.append(wrapper.format(title=r["title"].lower(), medium=r["medium"], text=r["text"][:700]))
+    for r in load_dataset("NousResearch/json-mode-eval", split="train"):
+        msgs = r["prompt"]
+        user = [m["content"] for m in msgs if m.get("role") == "user"] if isinstance(msgs, list) else []
+        if user:
+            json_prompts.append(user[-1].strip())
+    json_prompts = json_prompts[:n_public]
+    json_prompts += rng.sample(load_jsonl_prompts("data/json_train.jsonl", 10_000), per_class - len(json_prompts))
+
+    # Base: Dolly rows not used by the test set (all categories; context appended when present)
+    dolly = load_dataset("databricks/databricks-dolly-15k", split="train")
+    excluded = test_ids.get("databricks/databricks-dolly-15k", set())
+    pool = [i for i in range(len(dolly)) if str(i) not in excluded]
+    base = []
+    for i in rng.sample(pool, n_public):
+        r = dolly[i]
+        ctx = r["context"].strip()
+        base.append(f"{r['instruction'].strip()}\n\n{ctx[:600]}" if ctx else r["instruction"].strip())
+    base += generate_diverse_ood_prompts(n_template)
+
+    prompts = sql + json_prompts + code + base
+    labels = [0] * len(sql) + [1] * len(json_prompts) + [2] * len(code) + [3] * len(base)
+    counts = {LABEL_LIST[k]: labels.count(k) for k in range(4)}
+    print(f"   [+] v2 training prompts per class: {counts}", flush=True)
+    return prompts, labels
+
+
 def train_learned_router(
     output_dir: str = "models",
     samples_per_domain: int = 600,
     random_state: int = 42,
-    use_cache: bool = True,
+    model_name: str = "learned_router_v2",
 ) -> Dict:
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs("data", exist_ok=True)
-    
+
     print("\n" + "=" * 65, flush=True)
     print("TRAINING LEARNED ROUTER (2-LAYER MLP CLASSIFIER)", flush=True)
     print("=" * 65, flush=True)
-    
-    # 1. Check if embeddings cache exists
-    X, y_int = None, None
-    if use_cache and os.path.exists(CACHE_FILE):
-        print(f"Loading cached embeddings from {CACHE_FILE}...", flush=True)
-        try:
-            cached = np.load(CACHE_FILE, allow_pickle=True)
-            X = cached["X"]
-            y_int = cached["y_int"]
-            print(f"   [+] Loaded cached features: {X.shape}, labels: {y_int.shape}", flush=True)
-        except Exception as e:
-            print(f"   [!] Cache read failed: {e}. Recomputing...", flush=True)
-            X, y_int = None, None
 
-    if X is None or y_int is None:
-        print("1. Loading domain prompts from training datasets...", flush=True)
-        sql_prompts = load_jsonl_prompts("data/sql_train.jsonl", samples_per_domain)
-        json_prompts = load_jsonl_prompts("data/json_train.jsonl", samples_per_domain)
-        code_prompts = load_jsonl_prompts("data/code_train.jsonl", samples_per_domain)
-        base_prompts = generate_diverse_ood_prompts(samples_per_domain)
-        
-        print(f"   [+] SQL  samples : {len(sql_prompts)}", flush=True)
-        print(f"   [+] JSON samples : {len(json_prompts)}", flush=True)
-        print(f"   [+] CODE samples : {len(code_prompts)}", flush=True)
-        print(f"   [+] BASE samples : {len(base_prompts)}", flush=True)
-        
-        prompts = sql_prompts + json_prompts + code_prompts + base_prompts
-        y_int = np.array(
-            [0] * len(sql_prompts) +
-            [1] * len(json_prompts) +
-            [2] * len(code_prompts) +
-            [3] * len(base_prompts),
-            dtype=np.int32
-        )
-        
-        print("\n2. Computing BGE-small embeddings via FastEmbed (ONNX CPU)...", flush=True)
-        t0 = time.perf_counter()
-        embedder = TextEmbedding(model_name=ROUTER_MODEL_NAME)
-        embeddings = list(embedder.embed(prompts, batch_size=128))
-        X = np.array(embeddings, dtype=np.float32)
-        norms = np.linalg.norm(X, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        X = X / norms
-        
-        embed_time = time.perf_counter() - t0
-        print(f"   [+] Computed {len(X)} embeddings in {embed_time:.2f}s ({len(X)/embed_time:.1f} samples/sec)", flush=True)
-        
-        # Save cache
-        np.savez_compressed(CACHE_FILE, X=X, y_int=y_int)
-        print(f"   [+] Cached embeddings saved to {CACHE_FILE}", flush=True)
+    prompts, labels = build_v2_prompts(samples_per_domain, random.Random(random_state))
+    y_int = np.array(labels, dtype=np.int32)
+    print("\n2. Computing BGE-small embeddings via FastEmbed (ONNX CPU)...", flush=True)
+    embedder = TextEmbedding(model_name=ROUTER_MODEL_NAME)
+    X = np.array(list(embedder.embed(prompts, batch_size=64)), dtype=np.float32)
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X = X / norms
 
     # 3. Stratified Train / Validation Split
     print("\n3. Performing Stratified Train / Validation Split (85% train, 15% val)...", flush=True)
@@ -260,8 +298,8 @@ def train_learned_router(
         print(f"{l:<8}" + "".join([f"{cm[idx][j]:>10}" for j in range(len(LABEL_LIST))]), flush=True)
         
     # 6. Save Model Artifacts
-    model_path = os.path.join(output_dir, "learned_router.pkl")
-    meta_path = os.path.join(output_dir, "learned_router_meta.json")
+    model_path = os.path.join(output_dir, f"{model_name}.pkl")
+    meta_path = os.path.join(output_dir, f"{model_name}_meta.json")
     
     payload = {
         "model": mlp,
@@ -277,7 +315,9 @@ def train_learned_router(
         pickle.dump(payload, f)
         
     metadata = {
-        "model_file": "learned_router.pkl",
+        "model_file": f"{model_name}.pkl",
+        "note": ("validation split is in-distribution with the training data; see "
+                 "results/router_eval_*.json for accuracy on the realistic test set"),
         "embedding_model": ROUTER_MODEL_NAME,
         "architecture": "MLP(384 -> 128 -> 64 -> 4)",
         "classes": LABEL_LIST,
@@ -299,5 +339,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Learned Router")
     parser.add_argument("--output-dir", type=str, default="models", help="Output directory")
     parser.add_argument("--samples", type=int, default=600, help="Samples per domain")
+    parser.add_argument("--model-name", type=str, default="learned_router_v2", help="Output file stem")
     args = parser.parse_args()
-    train_learned_router(output_dir=args.output_dir, samples_per_domain=args.samples)
+    train_learned_router(output_dir=args.output_dir, samples_per_domain=args.samples, model_name=args.model_name)

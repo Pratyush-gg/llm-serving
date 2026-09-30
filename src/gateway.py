@@ -3,7 +3,9 @@ import sys
 import time
 import json
 import argparse
-from typing import Dict, List, Optional, Any
+import threading
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Any, Literal
 
 import requests
 import uvicorn
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 # Ensure repo root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.local_cache import HF_LOCAL_FILES_ONLY  # sets cache env vars before ML imports
 from src.router import get_router
 from src.cascade import CascadeRouter
 
@@ -26,6 +29,11 @@ BASE_MODEL_NAME = os.environ.get("BASE_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct"
 GATEWAY_ENGINE = os.environ.get("GATEWAY_ENGINE", "peft").lower()
 DEFAULT_ROUTER_STRATEGY = os.environ.get("ROUTER_STRATEGY", "auto").lower()
 ENABLE_CASCADE = os.environ.get("ENABLE_CASCADE", "false").lower() in ["true", "1", "yes"]
+GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8080"))
+# Calibrate with eval/calibrate_cascade.py and pass the chosen values via CLI flags or env vars.
+CASCADE_THRESHOLD = float(os.environ.get("CASCADE_THRESHOLD", "0.70"))
+CASCADE_MARGIN = float(os.environ.get("CASCADE_MARGIN", "0.15"))
+MAX_TOKENS_LIMIT = 2048
 
 ADAPTER_MAP = {
     "sql": "sql-adapter",
@@ -50,22 +58,23 @@ app = FastAPI(
     version="1.1.0",
 )
 
+# Wildcard origins are only valid without credentials (the API uses no cookies/auth).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Request / Response Schemas
 class QueryRequest(BaseModel):
-    prompt: str = Field(..., description="User prompt or instruction")
-    max_tokens: int = Field(256, description="Maximum tokens to generate")
-    temperature: float = Field(0.0, description="Sampling temperature")
-    force_adapter: Optional[str] = Field(None, description="Optional override: 'sql', 'json', 'code', or 'base'")
+    prompt: str = Field(..., min_length=1, description="User prompt or instruction")
+    max_tokens: int = Field(256, ge=1, le=MAX_TOKENS_LIMIT, description="Maximum tokens to generate")
+    temperature: float = Field(0.0, ge=0.0, le=2.0, description="Sampling temperature (0 = greedy)")
+    force_adapter: Optional[Literal["sql", "json", "code", "base"]] = Field(None, description="Optional override: 'sql', 'json', 'code', or 'base'")
     enable_cascade: Optional[bool] = Field(None, description="Optional toggle for confidence-based cascade")
-    router_strategy: Optional[str] = Field(None, description="Routing strategy: 'centroid', 'learned', or 'auto'")
+    router_strategy: Optional[Literal["centroid", "learned", "auto"]] = Field(None, description="Routing strategy: 'centroid', 'learned', or 'auto'")
 
 class QueryResponse(BaseModel):
     response: str
@@ -78,36 +87,76 @@ class QueryResponse(BaseModel):
     cascade_triggered: bool = False
     selection_reason: Optional[str] = None
     candidates_evaluated: Optional[List[Dict[str, Any]]] = None
+    # Per-stage timings. With cascade, generation figures are summed over all candidates generated.
+    generation_latency_ms: Optional[float] = Field(None, description="Time spent in token generation (excludes routing and queueing)")
+    adapter_switch_ms: Optional[float] = Field(None, description="Time to activate the adapter (PEFT engine only; null when not measurable)")
+    prompt_tokens: Optional[int] = Field(None, description="Prompt length in tokens (null when the engine does not report it)")
+    completion_tokens: Optional[int] = Field(None, description="Generated tokens (null when the engine does not report it)")
+    tokens_per_second: Optional[float] = Field(None, description="completion_tokens / generation time")
+
+
+@dataclass
+class GenerationResult:
+    text: str
+    generation_ms: float
+    adapter_switch_ms: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+
+
+def summarize_generation(results: List["GenerationResult"]) -> Dict[str, Any]:
+    """Aggregate timing fields over one or more generations (cascade may generate several)."""
+    if not results:
+        return {}
+    gen_ms = sum(r.generation_ms for r in results)
+
+    def total(attr):
+        values = [getattr(r, attr) for r in results]
+        return None if any(v is None for v in values) else sum(values)
+
+    completion = total("completion_tokens")
+    switch = total("adapter_switch_ms")
+    return {
+        "generation_latency_ms": round(gen_ms, 2),
+        "adapter_switch_ms": round(switch, 3) if switch is not None else None,
+        "prompt_tokens": total("prompt_tokens"),
+        "completion_tokens": completion,
+        "tokens_per_second": round(completion / (gen_ms / 1000), 2) if completion and gen_ms > 0 else None,
+    }
 
 # Native PEFT Engine State
 _peft_model = None
 _peft_base_model = None
 _peft_tokenizer = None
 
+# The PEFT model has a single "active adapter" shared by all requests, and FastAPI runs
+# sync endpoints in a threadpool. This lock serializes engine init, set_adapter and generate
+# so concurrent requests cannot switch each other's adapter mid-generation.
+_peft_lock = threading.RLock()
+
 def init_peft_engine():
     """Initializes and mounts 4-bit base model and all 3 LoRA adapters into unified VRAM."""
     global _peft_model, _peft_base_model, _peft_tokenizer
-    if _peft_model is not None and _peft_base_model is not None:
-        return _peft_model, _peft_base_model, _peft_tokenizer
+    with _peft_lock:
+        if _peft_model is not None and _peft_base_model is not None:
+            return _peft_model, _peft_base_model, _peft_tokenizer
+        return _load_peft_engine()
 
+def load_base_model():
+    """Load tokenizer and the 4-bit NF4 base model (fp32 on CPU when no GPU is available)."""
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-    from peft import PeftModel
 
-    print("\n" + "=" * 65, flush=True)
-    print("INITIALIZING NATIVE PEFT MULTI-ADAPTER ENGINE (RTX 4050 GPU)", flush=True)
-    print("=" * 65, flush=True)
-
-    print("1. Loading Tokenizer...", flush=True)
-    _peft_tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME, trust_remote_code=True)
-    if _peft_tokenizer.pad_token is None:
-        _peft_tokenizer.pad_token = _peft_tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(
+        BASE_MODEL_NAME, trust_remote_code=True, local_files_only=HF_LOCAL_FILES_ONLY
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     has_cuda = torch.cuda.is_available()
     use_bf16 = has_cuda and torch.cuda.is_bf16_supported()
     target_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
-    print(f"2. Loading Base Model ({BASE_MODEL_NAME}) in 4-bit VRAM...", flush=True)
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -121,54 +170,96 @@ def init_peft_engine():
         torch_dtype=target_dtype if has_cuda else torch.float32,
         device_map="auto" if has_cuda else None,
         trust_remote_code=True,
+        local_files_only=HF_LOCAL_FILES_ONLY,
     )
+    return base_model, tokenizer
 
-    print("3. Registering LoRA Adapters into Unified VRAM...", flush=True)
+
+def attach_adapters(base_model):
+    """Register every available LoRA adapter on the base model. Returns the PeftModel (or base if none)."""
+    from peft import PeftModel
+
     model = None
-    first = True
     for name, path in ADAPTER_PATHS.items():
         full_path = os.path.join(REPO_ROOT, path)
-        if os.path.exists(full_path):
-            if first:
-                print(f"   [+] Registering '{name}' adapter from {full_path}", flush=True)
-                model = PeftModel.from_pretrained(base_model, full_path, adapter_name=name)
-                first = False
-            else:
-                print(f"   [+] Registering '{name}' adapter from {full_path}", flush=True)
-                model.load_adapter(full_path, adapter_name=name)
+        if not os.path.exists(full_path):
+            continue
+        print(f"   [+] Registering '{name}' adapter from {full_path}", flush=True)
+        if model is None:
+            model = PeftModel.from_pretrained(base_model, full_path, adapter_name=name)
+        else:
+            model.load_adapter(full_path, adapter_name=name)
+    return model if model is not None else base_model
 
+
+def _load_peft_engine():
+    global _peft_model, _peft_base_model, _peft_tokenizer
+    import torch
+
+    print("\n" + "=" * 65, flush=True)
+    print("INITIALIZING NATIVE PEFT MULTI-ADAPTER ENGINE", flush=True)
+    print("=" * 65, flush=True)
+
+    print(f"1. Loading tokenizer and base model ({BASE_MODEL_NAME}, 4-bit NF4)...", flush=True)
+    base_model, _peft_tokenizer = load_base_model()
+
+    print("2. Registering LoRA adapters...", flush=True)
+    _peft_model = attach_adapters(base_model)
     _peft_base_model = base_model
-    _peft_model = model if model is not None else base_model
+
+    has_cuda = torch.cuda.is_available()
     vram_mb = torch.cuda.memory_allocated() / (1024 * 1024) if has_cuda else 0
     print(f"Native PEFT Engine ONLINE! GPU VRAM Allocated: {vram_mb:.1f} MB", flush=True)
     print("=" * 65 + "\n", flush=True)
     return _peft_model, _peft_base_model, _peft_tokenizer
 
-def peft_generate_response(route: str, prompt: str, max_tokens: int = 256) -> str:
+def peft_generate_response(route: str, prompt: str, max_tokens: int = 256, temperature: float = 0.0) -> GenerationResult:
     """Generates completion using active LoRA adapter on local GPU."""
+    import contextlib
     import torch
     model, base_model, tokenizer = init_peft_engine()
+    sampling_kwargs = {"do_sample": True, "temperature": temperature} if temperature > 0 else {"do_sample": False}
+    has_cuda = torch.cuda.is_available()
 
-    if route in ADAPTER_PATHS and model is not None and hasattr(model, "set_adapter"):
-        model.set_adapter(route)
-        gen_model = model
-    else:
-        gen_model = base_model
+    with _peft_lock:
+        messages = [{"role": "user", "content": prompt}]
+        formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tokenizer(formatted, return_tensors="pt").to("cuda" if has_cuda else "cpu")
+        prompt_len = inputs.input_ids.shape[1]
 
-    messages = [{"role": "user", "content": prompt}]
-    formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(formatted, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+        t_switch = time.perf_counter()
+        is_peft = hasattr(model, "set_adapter")
+        if route in ADAPTER_PATHS and is_peft and route in model.peft_config:
+            model.set_adapter(route)
+            adapter_ctx = contextlib.nullcontext()
+        elif is_peft:
+            # LoRA layers are injected into the base model in place, so calling base_model.generate
+            # would still apply the last active adapter. disable_adapter() gives the true base model.
+            adapter_ctx = model.disable_adapter()
+        else:
+            adapter_ctx = contextlib.nullcontext()
 
-    with torch.no_grad():
-        outputs = gen_model.generate(
-            **inputs,
-            max_new_tokens=max_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
+        with adapter_ctx, torch.no_grad():
+            switch_ms = (time.perf_counter() - t_switch) * 1000
+            t_gen = time.perf_counter()
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                pad_token_id=tokenizer.eos_token_id,
+                **sampling_kwargs,
+            )
+            if has_cuda:
+                torch.cuda.synchronize()
+            gen_ms = (time.perf_counter() - t_gen) * 1000
+
+        new_tokens = outputs[0][prompt_len:]
+        return GenerationResult(
+            text=tokenizer.decode(new_tokens, skip_special_tokens=True).strip(),
+            generation_ms=gen_ms,
+            adapter_switch_ms=switch_ms,
+            prompt_tokens=int(prompt_len),
+            completion_tokens=len(new_tokens),
         )
-
-    new_tokens = outputs[0][inputs.input_ids.shape[1]:]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 def mock_generate_response(model_name: str, prompt: str) -> str:
     """Mock generator for instantaneous testing and live dashboard demo without GPU."""
@@ -183,30 +274,43 @@ def mock_generate_response(model_name: str, prompt: str) -> str:
     else:
         return f"This response is generated by the shared frozen base model ({BASE_MODEL_NAME}). It provides general factual and reasoning capabilities across arbitrary domains."
 
-def execute_engine_generation(route: str, prompt: str, max_tokens: int, temperature: float) -> str:
+def execute_engine_generation(route: str, prompt: str, max_tokens: int, temperature: float) -> GenerationResult:
     """Dispatches generation request to active backend engine."""
     model_name = ADAPTER_MAP.get(route, BASE_MODEL_NAME)
     if GATEWAY_ENGINE == "peft":
-        return peft_generate_response(route, prompt, max_tokens)
+        return peft_generate_response(route, prompt, max_tokens, temperature)
     elif GATEWAY_ENGINE == "mock":
+        t0 = time.perf_counter()
         time.sleep(0.04)  # Small realistic latency simulation
-        return mock_generate_response(model_name, prompt)
+        text = mock_generate_response(model_name, prompt)
+        return GenerationResult(text=text, generation_ms=(time.perf_counter() - t0) * 1000)
     else:
         # Forward to vLLM server
+        vllm_payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        t0 = time.perf_counter()
         try:
-            vllm_payload = {
-                "model": model_name,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            }
             resp = requests.post(VLLM_COMPLETIONS_URL, json=vllm_payload, timeout=60.0)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail=f"vLLM error: {resp.text}")
-            return resp.json()["choices"][0]["message"]["content"]
-        except requests.exceptions.ConnectionError:
-            print(f"[GATEWAY NOTICE] vLLM offline. Falling back to local PEFT generator.")
-            return peft_generate_response(route, prompt, max_tokens)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"vLLM backend unavailable at {VLLM_HOST} ({type(e).__name__}).",
+            )
+        gen_ms = (time.perf_counter() - t0) * 1000  # includes the HTTP hop to vLLM
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"vLLM error ({resp.status_code}): {resp.text}")
+        data = resp.json()
+        usage = data.get("usage") or {}
+        return GenerationResult(
+            text=data["choices"][0]["message"]["content"],
+            generation_ms=gen_ms,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+        )
 
 # Endpoints
 @app.get("/health")
@@ -224,7 +328,7 @@ def health_check():
 
     return {
         "status": "healthy",
-        "gateway_port": 8080,
+        "gateway_port": GATEWAY_PORT,
         "engine": GATEWAY_ENGINE,
         "gpu_device": device_name,
         "vram_allocated_mb": vram_mb,
@@ -248,7 +352,10 @@ def list_models():
     }
 
 @app.get("/v1/router/scores")
-def get_router_scores(prompt: str = Query(..., description="Query prompt to route"), strategy: Optional[str] = None):
+def get_router_scores(
+    prompt: str = Query(..., min_length=1, description="Query prompt to route"),
+    strategy: Optional[Literal["centroid", "learned", "auto"]] = None,
+):
     """
     Computes and returns real-time routing scores across all 4 domains without running token generation.
     Ideal for dynamic radar charts and live router telemetry.
@@ -289,14 +396,23 @@ def generate(req: QueryRequest):
 
     if use_cascade:
         # Confidence-based cascade path
-        cascade_router = CascadeRouter(base_router=router, cascade_threshold=0.70)
+        cascade_router = CascadeRouter(base_router=router, cascade_threshold=CASCADE_THRESHOLD,
+                                       margin_threshold=CASCADE_MARGIN)
+        generations: List[GenerationResult] = []
+
+        def generate_and_record(route: str, prompt: str) -> str:
+            result = execute_engine_generation(route, prompt, req.max_tokens, req.temperature)
+            generations.append(result)
+            return result.text
+
         cascade_res = cascade_router.route_and_generate(
             prompt=req.prompt,
-            generate_fn=lambda r, p: execute_engine_generation(r, p, req.max_tokens, req.temperature),
+            generate_fn=generate_and_record,
             force_adapter=req.force_adapter,
         )
         total_lat = (time.perf_counter() - t_start) * 1000
         return QueryResponse(
+            **summarize_generation(generations),
             response=cascade_res.response,
             adapter_used=cascade_res.final_adapter,
             model_identifier=ADAPTER_MAP.get(cascade_res.final_adapter, BASE_MODEL_NAME),
@@ -321,10 +437,12 @@ def generate(req: QueryRequest):
         routing_latency_ms = route_info["latency_ms"]
 
     model_name = ADAPTER_MAP.get(route, BASE_MODEL_NAME)
-    content = execute_engine_generation(route, req.prompt, req.max_tokens, req.temperature)
+    generation = execute_engine_generation(route, req.prompt, req.max_tokens, req.temperature)
+    content = generation.text
     total_latency_ms = (time.perf_counter() - t_start) * 1000
 
     return QueryResponse(
+        **summarize_generation([generation]),
         response=content,
         adapter_used=route,
         model_identifier=model_name,
@@ -361,11 +479,19 @@ def start_gateway(
     engine: str = "peft",
     router_strategy: str = "auto",
     cascade: bool = False,
+    cascade_threshold: Optional[float] = None,
+    cascade_margin: Optional[float] = None,
 ):
-    global GATEWAY_ENGINE, DEFAULT_ROUTER_STRATEGY, ENABLE_CASCADE
+    global GATEWAY_ENGINE, DEFAULT_ROUTER_STRATEGY, ENABLE_CASCADE, GATEWAY_PORT
+    global CASCADE_THRESHOLD, CASCADE_MARGIN
     GATEWAY_ENGINE = engine
     DEFAULT_ROUTER_STRATEGY = router_strategy
     ENABLE_CASCADE = cascade
+    GATEWAY_PORT = port
+    if cascade_threshold is not None:
+        CASCADE_THRESHOLD = cascade_threshold
+    if cascade_margin is not None:
+        CASCADE_MARGIN = cascade_margin
 
     os.environ["GATEWAY_ENGINE"] = GATEWAY_ENGINE
     os.environ["ROUTER_STRATEGY"] = DEFAULT_ROUTER_STRATEGY
@@ -396,7 +522,8 @@ def start_gateway(
     print(f"ROUTED MULTI-ADAPTER SERVING GATEWAY v1.1")
     print(f"Engine          : {GATEWAY_ENGINE.upper()}")
     print(f"Router Strategy : {DEFAULT_ROUTER_STRATEGY.upper()}")
-    print(f"Cascade Mode    : {'ENABLED' if ENABLE_CASCADE else 'DISABLED'}")
+    print(f"Cascade Mode    : {'ENABLED' if ENABLE_CASCADE else 'DISABLED'} "
+          f"(threshold={CASCADE_THRESHOLD}, margin={CASCADE_MARGIN})")
     print(f"Dashboard URL   : http://localhost:{port}/dashboard/")
     print(f"API Endpoint    : http://localhost:{port}/v1/chat")
     print("=" * 65 + "\n")
@@ -411,6 +538,10 @@ if __name__ == "__main__":
     parser.add_argument("--router-strategy", type=str, choices=["centroid", "learned", "auto"], default="auto",
                         help="Default routing strategy (default: 'auto')")
     parser.add_argument("--cascade", action="store_true", help="Enable confidence-based cascade routing")
+    parser.add_argument("--cascade-threshold", type=float, default=None,
+                        help="Cascade confidence threshold (default 0.70; calibrate with eval/calibrate_cascade.py)")
+    parser.add_argument("--cascade-margin", type=float, default=None,
+                        help="Cascade top-2 margin threshold (default 0.15)")
     parser.add_argument("--ngrok", action="store_true", help="Enable public pyngrok tunnel")
     parser.add_argument("--ngrok-token", type=str, default=None, help="Optional ngrok authtoken")
     parser.add_argument("--mock-vllm", action="store_true", help="Shortcut for --engine mock")
@@ -426,4 +557,6 @@ if __name__ == "__main__":
         engine=eng,
         router_strategy=args.router_strategy,
         cascade=args.cascade,
+        cascade_threshold=args.cascade_threshold,
+        cascade_margin=args.cascade_margin,
     )

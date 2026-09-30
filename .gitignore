@@ -70,6 +70,23 @@ venv.bak/
 Thumbs.db
 desktop.ini
 
+# AI assistant files (local rules/settings; Claude Code still reads CLAUDE.md from disk)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+# Code-eval sandbox (throwaway folders for running model-generated code)
+.eval_sandbox/
+.pytest_cache/
+
+# Repo-local model / dataset / library caches (see src/local_cache.py)
+.model_cache/
+
+# Generated benchmark outputs (reproduce with scripts/run_all_benchmarks.py).
+# Charts and the combined report stay tracked because README.md shows them.
+results/raw_outputs/
+results/*.json
+
 # Logs & Temporary Runs
 *.log
 logs/

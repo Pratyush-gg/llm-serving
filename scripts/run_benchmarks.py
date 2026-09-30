@@ -1,217 +1,246 @@
+"""
+Live latency benchmark against a running gateway (no simulation).
+
+Sends requests sequentially to /v1/chat and records the per-stage timings the gateway reports
+(routing, adapter switch, generation, token counts) plus the client-measured round trip.
+Warm-up requests are excluded from the statistics.
+
+Usage:
+  python -m src.gateway --engine peft --router-strategy learned   # in another terminal
+  python scripts/run_benchmarks.py --endpoint http://localhost:8080 --count 100
+"""
 import os
 import sys
 import json
 import time
 import random
 import argparse
-import numpy as np
-import matplotlib.pyplot as plt
-import requests
+from typing import Dict, List
 
-# Ensure repo root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.router import get_router
+from src import local_cache  # noqa: F401  (keeps the matplotlib cache inside the repo)
 
-BENCHMARK_PROMPTS = [
-    # SQL (25)
-    "Given schema CREATE TABLE customers (id INT, name VARCHAR, balance FLOAT), select customers with balance > 1000.",
-    "Write a SQL query to count orders grouped by status from orders table.",
-    "Database schema CREATE TABLE products (price INT, category VARCHAR). Find the average price of electronics.",
-    "SELECT employee_name, department FROM staff WHERE hire_date > '2022-01-01';",
-    "How many active users signed up in the last 30 days from user_logs table?",
-    # JSON (25)
-    "Extract customer info: Receipt #REC-9821, Customer Alice Walker, amount paid $89.20.",
-    "Parse into JSON: Order confirmation for Bob Miller, invoice INV-11029 with balance $450.00.",
-    "Customer Support Ticket: User Carlos Garcia requested assistance with charge of $19.99 on order REF-4401.",
-    "Billing notification for Elena Martinez. Transaction TXN-5591 processed for $1200.50.",
-    "Log message: Dispatched order ORD-7788 to David Lee with COD collection amount $35.00.",
-    # Code (25)
-    "Write a Python function to reverse a string in-place.",
-    "Implement binary search on a sorted integer list.",
-    "Write a function def is_valid_brackets(s: str) -> bool that checks matching parentheses.",
-    "def calculate_moving_average(values: list[float], window: int) -> list[float]:",
-    "Write a Python function to compute the n-th Fibonacci number iteratively.",
-    # Base (25)
+import numpy as np
+import requests
+
+# Chart colors: reference categorical slots 1-4 in fixed order, text inks, surface.
+STAGE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
+C_TEXT = "#0b0b0b"
+C_TEXT_2 = "#52514e"
+C_GRID = "#e4e3df"
+C_SURFACE = "#fcfcfb"
+
+BASE_PROMPTS = [
     "Explain the philosophical doctrine of stoicism and its core principles.",
     "What are the main ecological impacts of ocean acidification?",
     "Describe the lifecycle of a high-mass star from nebula to supernova.",
     "Provide a brief historical summary of the Renaissance period in Europe.",
     "How does the immune system develop adaptive immunity against pathogens?",
+    "What are good strategies for learning a new language as an adult?",
+    "Summarize the causes of the French Revolution.",
+    "Why do leaves change color in autumn?",
 ]
 
-def run_benchmarks(
-    num_requests: int = 100,
-    endpoint_url: str = None,
-    simulate: bool = False,
-    output_json: str = "results/latency_breakdown.json",
-    output_image: str = "results/latency_breakdown.png",
-):
-    print("\n" + "=" * 70)
-    print(f"RUNNING SYSTEM LATENCY BENCHMARKS ({num_requests} Requests)")
-    print("=" * 70)
 
-    router = get_router()
-    prompts_pool = BENCHMARK_PROMPTS * (num_requests // len(BENCHMARK_PROMPTS) + 1)
-    prompts_pool = prompts_pool[:num_requests]
-    random.seed(42)
-    random.shuffle(prompts_pool)
+def load_prompts(per_domain: int, seed: int) -> List[str]:
+    prompts = []
+    for task in ["sql", "json", "code"]:
+        with open(f"data/{task}_holdout.jsonl", "r", encoding="utf-8") as f:
+            prompts += [json.loads(line)["prompt"] for line in f if line.strip()][:per_domain]
+    prompts += (BASE_PROMPTS * (per_domain // len(BASE_PROMPTS) + 1))[:per_domain]
+    random.Random(seed).shuffle(prompts)
+    return prompts
 
-    routing_latencies = []
-    switch_latencies = []
-    gen_latencies = []
-    total_latencies = []
-    routes_recorded = []
 
-    print(f"Executing benchmark requests (Mode: {'Simulation (Calibrated T4)' if simulate else f'Live Endpoint ({endpoint_url})'})...")
-
-    prev_adapter = None
-    for i, prompt in enumerate(prompts_pool):
-        # 1. Router Step
-        t_route_start = time.perf_counter()
-        route_res = router.route_detailed(prompt)
-        t_route_ms = route_res["latency_ms"]
-        route = route_res["route"]
-        routes_recorded.append(route)
-        routing_latencies.append(t_route_ms)
-
-        if simulate:
-            # Calibrated real T4 vLLM measurements:
-            # - If switching adapter: ~14ms overhead. If same adapter: ~1.2ms.
-            is_switch = (route != prev_adapter) and (route != "base")
-            t_switch_ms = random.gauss(14.5, 1.8) if is_switch else random.gauss(1.5, 0.3)
-            t_switch_ms = max(0.5, t_switch_ms)
-            switch_latencies.append(t_switch_ms)
-
-            # - Token generation (128 tokens at ~55 tok/s on T4): ~180-240ms
-            t_gen_ms = random.gauss(195.0, 18.0)
-            t_gen_ms = max(120.0, t_gen_ms)
-            gen_latencies.append(t_gen_ms)
-
-            t_total_ms = t_route_ms + t_switch_ms + t_gen_ms
-            total_latencies.append(t_total_ms)
-            prev_adapter = route
-        else:
-            t0 = time.perf_counter()
-            try:
-                resp = requests.post(endpoint_url, json={"prompt": prompt, "max_tokens": 128}, timeout=30.0)
-                resp.raise_for_status()
-                data = resp.json()
-                t_total_ms = (time.perf_counter() - t0) * 1000
-                total_latencies.append(t_total_ms)
-
-                # Extract reported latencies if available
-                reported_route_ms = data.get("routing_latency_ms", t_route_ms)
-                t_switch_ms = 12.0  # Measured vLLM LoRA switch delta
-                t_gen_ms = max(10.0, t_total_ms - reported_route_ms - t_switch_ms)
-                switch_latencies.append(t_switch_ms)
-                gen_latencies.append(t_gen_ms)
-            except Exception as e:
-                print(f"Request {i+1} failed: {e}")
-                continue
-
-    # Compute Statistics
-    def compute_stats(arr):
-        return {
-            "mean": round(float(np.mean(arr)), 2),
-            "p50": round(float(np.percentile(arr, 50)), 2),
-            "p90": round(float(np.percentile(arr, 90)), 2),
-            "p95": round(float(np.percentile(arr, 95)), 2),
-            "p99": round(float(np.percentile(arr, 99)), 2),
-        }
-
-    stats = {
-        "num_requests": len(total_latencies),
-        "mode": "simulation_calibrated_t4" if simulate else "live_endpoint",
-        "routing_latency_ms": compute_stats(routing_latencies),
-        "adapter_switch_latency_ms": compute_stats(switch_latencies),
-        "generation_latency_ms": compute_stats(gen_latencies),
-        "total_e2e_latency_ms": compute_stats(total_latencies),
-        "route_distribution": {
-            k: routes_recorded.count(k) for k in set(routes_recorded)
-        }
+def stats(values: List[float]) -> Dict[str, float]:
+    arr = np.array([v for v in values if v is not None], dtype=float)
+    if arr.size == 0:
+        return {"n": 0}
+    return {
+        "n": int(arr.size),
+        "mean": round(float(arr.mean()), 2),
+        "p50": round(float(np.percentile(arr, 50)), 2),
+        "p95": round(float(np.percentile(arr, 95)), 2),
+        "p99": round(float(np.percentile(arr, 99)), 2),
+        "max": round(float(arr.max()), 2),
     }
 
-    # Print Latency Breakdown Table
-    print("\n" + "=" * 70)
-    print("DAY 6: LATENCY BREAKDOWN SUMMARY TABLE (100 REQUESTS)")
-    print("=" * 70)
-    print(f"{'Pipeline Stage':<28} | {'Mean':<10} | {'P50 (Median)':<12} | {'P95':<10} | {'P99':<8}")
-    print("-" * 70)
-    print(f"{'1. Semantic Router (fastembed)':<28} | {stats['routing_latency_ms']['mean']:>6} ms | {stats['routing_latency_ms']['p50']:>8} ms | {stats['routing_latency_ms']['p95']:>6} ms | {stats['routing_latency_ms']['p99']:>6} ms")
-    print(f"{'2. vLLM LoRA Switch / Forward':<28} | {stats['adapter_switch_latency_ms']['mean']:>6} ms | {stats['adapter_switch_latency_ms']['p50']:>8} ms | {stats['adapter_switch_latency_ms']['p95']:>6} ms | {stats['adapter_switch_latency_ms']['p99']:>6} ms")
-    print(f"{'3. Token Generation (128 tok)':<28} | {stats['generation_latency_ms']['mean']:>6} ms | {stats['generation_latency_ms']['p50']:>8} ms | {stats['generation_latency_ms']['p95']:>6} ms | {stats['generation_latency_ms']['p99']:>6} ms")
-    print("-" * 70)
-    print(f"{'Total End-to-End Latency':<28} | {stats['total_e2e_latency_ms']['mean']:>6} ms | {stats['total_e2e_latency_ms']['p50']:>8} ms | {stats['total_e2e_latency_ms']['p95']:>6} ms | {stats['total_e2e_latency_ms']['p99']:>6} ms")
-    print("=" * 70 + "\n")
 
-    # Save JSON
-    os.makedirs(os.path.dirname(output_json) or ".", exist_ok=True)
-    with open(output_json, "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2)
-    print(f"Latency statistics saved -> {output_json}")
+def run_benchmarks(endpoint: str, count: int, max_tokens: int, warmup: int, router_strategy: str,
+                   cascade: bool, seed: int) -> Dict:
+    base_url = endpoint.rstrip("/")
+    if "//localhost" in base_url:
+        # On Windows, "localhost" tries IPv6 first and adds ~2 s per request against the
+        # IPv4-only gateway, which would swamp the client round-trip measurement.
+        base_url = base_url.replace("//localhost", "//127.0.0.1")
+        print(f"Using {base_url} (avoids the Windows localhost IPv6 fallback delay)")
+    health = requests.get(f"{base_url}/health", timeout=10).json()
+    print(f"Gateway: engine={health.get('engine')} gpu={health.get('gpu_device')}")
 
-    # Generate Chart
-    generate_latency_chart(stats, routing_latencies, switch_latencies, gen_latencies, total_latencies, output_image)
-    return stats
+    per_domain = max(1, (count + warmup) // 4 + 1)
+    prompts = load_prompts(per_domain, seed)[: count + warmup]
 
-def generate_latency_chart(stats, r_lats, s_lats, g_lats, t_lats, output_image: str):
-    plt.style.use("seaborn-v0_8-whitegrid" if "seaborn-v0_8-whitegrid" in plt.style.available else "default")
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5), dpi=300)
+    records = []
+    for i, prompt in enumerate(prompts):
+        payload = {"prompt": prompt, "max_tokens": max_tokens, "temperature": 0.0,
+                   "router_strategy": router_strategy, "enable_cascade": cascade}
+        t0 = time.perf_counter()
+        resp = requests.post(f"{base_url}/v1/chat", json=payload, timeout=300)
+        client_ms = (time.perf_counter() - t0) * 1000
+        resp.raise_for_status()
+        d = resp.json()
 
-    # Subplot 1: Stacked Bar of P50 and P95 Stages
-    stages = ["P50 (Median)", "P95"]
-    r_vals = [stats["routing_latency_ms"]["p50"], stats["routing_latency_ms"]["p95"]]
-    s_vals = [stats["adapter_switch_latency_ms"]["p50"], stats["adapter_switch_latency_ms"]["p95"]]
-    g_vals = [stats["generation_latency_ms"]["p50"], stats["generation_latency_ms"]["p95"]]
+        is_warmup = i < warmup
+        gen = d.get("generation_latency_ms")
+        other = d["total_latency_ms"] - d["routing_latency_ms"] - (gen or 0) - (d.get("adapter_switch_ms") or 0)
+        records.append({
+            "warmup": is_warmup,
+            "adapter": d["adapter_used"],
+            "cascade_triggered": d.get("cascade_triggered", False),
+            "client_round_trip_ms": round(client_ms, 2),
+            "server_total_ms": d["total_latency_ms"],
+            "routing_ms": d["routing_latency_ms"],
+            "adapter_switch_ms": d.get("adapter_switch_ms"),
+            "generation_ms": gen,
+            "other_server_ms": round(other, 2),
+            "prompt_tokens": d.get("prompt_tokens"),
+            "completion_tokens": d.get("completion_tokens"),
+            "tokens_per_second": d.get("tokens_per_second"),
+        })
+        tag = "warmup" if is_warmup else f"{i - warmup + 1}/{count}"
+        print(f"  [{tag}] {d['adapter_used']:<5} total {d['total_latency_ms']:>8.1f} ms "
+              f"| gen {gen or 0:>8.1f} ms | {d.get('completion_tokens')} tok")
 
-    c_route = "#8b5cf6"  # Purple
-    c_switch = "#f59e0b" # Amber
-    c_gen = "#3b82f6"    # Blue
+    measured = [r for r in records if not r["warmup"]]
 
-    bar_width = 0.45
-    p1 = ax1.bar(stages, r_vals, width=bar_width, label="Router Step (~2.5ms)", color=c_route)
-    p2 = ax1.bar(stages, s_vals, width=bar_width, bottom=r_vals, label="vLLM LoRA Switch (~14ms)", color=c_switch)
-    p3 = ax1.bar(stages, g_vals, width=bar_width, bottom=[r + s for r, s in zip(r_vals, s_vals)], label="Token Generation (~195ms)", color=c_gen)
+    def stage_stats(rows):
+        return {
+            "client_round_trip_ms": stats([r["client_round_trip_ms"] for r in rows]),
+            "server_total_ms": stats([r["server_total_ms"] for r in rows]),
+            "routing_ms": stats([r["routing_ms"] for r in rows]),
+            "adapter_switch_ms": stats([r["adapter_switch_ms"] for r in rows]),
+            "generation_ms": stats([r["generation_ms"] for r in rows]),
+            "other_server_ms": stats([r["other_server_ms"] for r in rows]),
+            "completion_tokens": stats([r["completion_tokens"] for r in rows]),
+            "tokens_per_second": stats([r["tokens_per_second"] for r in rows]),
+        }
 
-    ax1.set_ylabel("Latency (milliseconds)", fontsize=11, fontweight="semibold")
-    ax1.set_title("Serving Pipeline Latency Breakdown (P50 vs. P95)", fontsize=12, fontweight="bold")
-    ax1.legend(loc="upper left", frameon=True, fontsize=9)
+    adapters = sorted({r["adapter"] for r in measured})
+    return {
+        "mode": "live_measured",
+        "measured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "config": {
+            "endpoint": base_url, "num_requests": len(measured), "warmup_requests": warmup,
+            "max_tokens": max_tokens, "temperature": 0.0, "router_strategy": router_strategy,
+            "cascade": cascade, "concurrency": 1, "seed": seed,
+        },
+        "gateway_health": health,
+        "overall": stage_stats(measured),
+        "by_adapter": {a: stage_stats([r for r in measured if r["adapter"] == a]) for a in adapters},
+        "route_distribution": {a: sum(r["adapter"] == a for r in measured) for a in adapters},
+        "requests": records,
+    }
 
-    for i, (r, s, g) in enumerate(zip(r_vals, s_vals, g_vals)):
-        tot = r + s + g
-        ax1.text(i, tot + 5, f"{tot:.1f} ms", ha="center", va="bottom", fontsize=10, fontweight="bold")
 
-    # Subplot 2: Cumulative Distribution Function (CDF) of Total Latency
-    sorted_total = np.sort(t_lats)
-    cdf = np.arange(1, len(sorted_total) + 1) / len(sorted_total)
-    ax2.plot(sorted_total, cdf * 100, color="#2563eb", linewidth=2.5, label="End-to-End Latency")
-    ax2.axvline(stats["total_e2e_latency_ms"]["p50"], color="#10b981", linestyle="--", label=f"P50: {stats['total_e2e_latency_ms']['p50']}ms")
-    ax2.axvline(stats["total_e2e_latency_ms"]["p95"], color="#ef4444", linestyle="--", label=f"P95: {stats['total_e2e_latency_ms']['p95']}ms")
+def generate_latency_chart(results: Dict, output_image: str):
+    """Stacked bars of MEAN time per stage for each adapter (means add up; percentiles do not)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    ax2.set_xlabel("Latency (milliseconds)", fontsize=11, fontweight="semibold")
-    ax2.set_ylabel("Percentile (%)", fontsize=11, fontweight="semibold")
-    ax2.set_title("End-to-End Latency Distribution (CDF)", fontsize=12, fontweight="bold")
-    ax2.legend(loc="lower right", frameon=True, fontsize=9)
+    stages = [("routing_ms", "Routing"), ("adapter_switch_ms", "Adapter switch"),
+              ("generation_ms", "Generation"), ("other_server_ms", "Other server overhead")]
+    groups = ["overall"] + list(results["by_adapter"].keys())
+    data = {"overall": results["overall"], **results["by_adapter"]}
 
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(8.5, 0.6 * len(groups) + 1.8), dpi=200)
+    fig.patch.set_facecolor(C_SURFACE)
+    ax.set_facecolor(C_SURFACE)
+
+    ys = list(range(len(groups)))[::-1]
+    left = np.zeros(len(groups))
+    for (key, label), color in zip(stages, STAGE_COLORS):
+        vals = np.array([data[g][key].get("mean", 0.0) or 0.0 for g in groups])
+        ax.barh(ys, vals, left=left, height=0.55, color=color, label=label,
+                edgecolor=C_SURFACE, linewidth=1)
+        left += vals
+    for y, total, g in zip(ys, left, groups):
+        n = data[g]["server_total_ms"]["n"]
+        ax.text(total + left.max() * 0.01, y, f"{total:,.0f} ms  (n={n})", va="center",
+                fontsize=8.5, color=C_TEXT)
+
+    ax.set_yticks(ys)
+    ax.set_yticklabels(["All requests" if g == "overall" else f"{g} adapter" for g in groups],
+                       fontsize=9, color=C_TEXT)
+    ax.set_xlim(0, left.max() * 1.22)
+    ax.set_xlabel("Mean server-side latency per request (ms)", fontsize=9, color=C_TEXT_2)
+    ax.tick_params(axis="x", colors=C_TEXT_2, labelsize=8)
+    ax.tick_params(axis="y", length=0)
+    ax.grid(axis="x", color=C_GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ["top", "right", "left"]:
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(C_GRID)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=4, frameon=False, fontsize=8,
+              labelcolor=C_TEXT_2)
+
+    cfg = results["config"]
+    gpu = results["gateway_health"].get("gpu_device", "?")
+    fig.text(0.01, 0.01, f"Measured on {gpu}, engine={results['gateway_health'].get('engine')}, "
+             f"max_tokens={cfg['max_tokens']}, sequential requests. Routing and switch are "
+             f"small relative to generation.", fontsize=7, color=C_TEXT_2)
+    plt.tight_layout(rect=(0, 0.05, 1, 1))
     os.makedirs(os.path.dirname(output_image) or ".", exist_ok=True)
-    plt.savefig(output_image)
-    plt.close()
-    print(f"Latency breakdown plot generated -> {output_image}")
+    plt.savefig(output_image, facecolor=C_SURFACE)
+    plt.close(fig)
+    print(f"Latency chart saved -> {output_image}")
+
+
+def print_summary(results: Dict):
+    print("\n" + "=" * 78)
+    print(f"LATENCY SUMMARY ({results['config']['num_requests']} measured requests, "
+          f"max_tokens={results['config']['max_tokens']})")
+    print("=" * 78)
+    print(f"{'Stage':<24} | {'mean':>9} | {'p50':>9} | {'p95':>9} | {'p99':>9}")
+    print("-" * 78)
+    for key, label in [("routing_ms", "Routing"), ("adapter_switch_ms", "Adapter switch"),
+                       ("generation_ms", "Generation"), ("other_server_ms", "Other server"),
+                       ("server_total_ms", "Server total"), ("client_round_trip_ms", "Client round trip")]:
+        s = results["overall"][key]
+        if s.get("n"):
+            print(f"{label:<24} | {s['mean']:>9.2f} | {s['p50']:>9.2f} | {s['p95']:>9.2f} | {s['p99']:>9.2f}")
+        else:
+            print(f"{label:<24} | {'not reported':>45}")
+    tps = results["overall"]["tokens_per_second"]
+    if tps.get("n"):
+        print(f"\nDecode throughput: {tps['p50']:.1f} tokens/s (p50)")
+    print("=" * 78)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Latency Benchmarks")
-    parser.add_argument("--count", type=int, default=100, help="Number of benchmark requests")
-    parser.add_argument("--endpoint", type=str, default=None, help="Live gateway endpoint URL")
-    parser.add_argument("--simulate", action="store_true", default=True, help="Run calibrated simulation on T4 profile")
+    parser = argparse.ArgumentParser(description="Live latency benchmark against a running gateway")
+    parser.add_argument("--endpoint", type=str, required=True, help="Gateway base URL, e.g. http://localhost:8080")
+    parser.add_argument("--count", type=int, default=100, help="Measured requests (excluding warm-up)")
+    parser.add_argument("--warmup", type=int, default=3, help="Warm-up requests excluded from stats")
+    parser.add_argument("--max-tokens", type=int, default=128)
+    parser.add_argument("--router-strategy", type=str, default="auto", choices=["auto", "learned", "centroid"])
+    parser.add_argument("--cascade", action="store_true", help="Enable cascade on every request")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output-json", type=str, default="results/latency_breakdown.json")
+    parser.add_argument("--output-image", type=str, default="results/latency_breakdown.png")
     args = parser.parse_args()
 
-    # If endpoint provided, disable simulate
-    if args.endpoint:
-        args.simulate = False
+    results = run_benchmarks(args.endpoint, args.count, args.max_tokens, args.warmup,
+                             args.router_strategy, args.cascade, args.seed)
+    print_summary(results)
 
-    run_benchmarks(num_requests=args.count, endpoint_url=args.endpoint, simulate=args.simulate)
+    os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
+    with open(args.output_json, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+    print(f"Results saved -> {args.output_json}")
+    generate_latency_chart(results, args.output_image)
+
 
 if __name__ == "__main__":
     main()

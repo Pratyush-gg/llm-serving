@@ -685,6 +685,7 @@ body {
 
 .hl { font-weight: 700; color: #fff; font-family: var(--mono); }
 .delta-pos { color: var(--json); font-family: var(--mono); font-weight: 600; }
+.delta-neg { color: var(--rose); font-family: var(--mono); font-weight: 600; }
 
 .row-total td { font-weight: 600; border-top: 1px solid var(--card-border); }
 

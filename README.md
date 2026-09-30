@@ -1,440 +1,244 @@
 # Routed Multi-Adapter LLM Serving System
 
-[![Architecture: Multi-LoRA](https://img.shields.io/badge/Architecture-Dynamic%20Multi--LoRA-blue)](https://github.com/)
-[![Base Model: Qwen2.5-1.5B](https://img.shields.io/badge/Base%20Model-Qwen2.5--1.5B--Instruct-purple)](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct)
-[![Hardware: RTX 4050 & T4](https://img.shields.io/badge/Hardware-RTX%204050%20(6GB)%20%7C%20T4%20(16GB)-green)](https://www.nvidia.com/)
-[![Router: Learned MLP](https://img.shields.io/badge/Router-Learned%20MLP%20(100%25%20Val)-orange)](https://huggingface.co/BAAI/bge-small-en-v1.5)
-[![Cascade: Confidence-Based](https://img.shields.io/badge/Cascade-Confidence%20Based%20(93.8%25)-red)](#)
-[![Dashboard: Interactive](https://img.shields.io/badge/Dashboard-Interactive%20Web%20UI-blueviolet)](#)
-[![Status: Complete & Benchmarked](https://img.shields.io/badge/Status-Complete%20%26%20Benchmarked-success)](#)
+One frozen base model (`Qwen/Qwen2.5-1.5B-Instruct`, 4-bit NF4) serves three task-specific LoRA
+adapters (SQL generation, JSON extraction, Python code). A learned router picks the adapter for each
+request; an optional confidence-based cascade can try the top-2 adapters and keep the better output.
+A FastAPI gateway exposes it all, with a web dashboard, per-stage timings, and a vLLM backend option.
 
-A production-grade, memory-conserving LLM serving architecture using **dynamic LoRA adapter routing** with a **trained Learned MLP router** and **confidence-based cascade fallback**. A single frozen base model (`Qwen/Qwen2.5-1.5B-Instruct`) serves multiple specialized domain adapters (SQL generation, structured JSON extraction, and Python code generation), routed via a 2-layer neural MLP classifier trained on BGE-Small embeddings (`BAAI/bge-small-en-v1.5`), with an optional cascade strategy that rescues ambiguous queries through domain-specific quality validation.
-
-The system includes an **interactive web dashboard** for real-time inference testing, router visualization, and benchmark exploration, and supports **dual serving engines**:
-1. **Native PEFT Engine (Port 8080):** High-efficiency local serving on consumer GPUs (e.g., NVIDIA GeForce RTX 4050 6GB) using 4-bit NF4 quantization, loading the entire multi-adapter system into just **1.12 GB VRAM** with zero-overhead adapter switching.
-2. **vLLM Multi-LoRA Engine (Port 8000 + 8080 Gateway):** High-throughput cloud/server deployment (e.g., NVIDIA T4 16GB) utilizing PagedAttention and continuous batching across dynamic LoRA weights.
+**All numbers below are measured** on an NVIDIA GeForce RTX 4050 Laptop GPU (6 GB) unless marked as an
+estimate. Full report: [results/combined_benchmark_report.md](results/combined_benchmark_report.md).
+Per-example results and raw model outputs (`results/*.json`, `results/raw_outputs/`) are generated locally by
+`scripts/run_all_benchmarks.py` and not stored in git.
 
 ---
 
-## 1. System Architecture
+## 1. Architecture
 
-```
-Incoming User Query
-  ("SELECT * FROM users WHERE age > 21")
-                 │
-                 ▼
-    ┌──────────────────────────────┐
-    │    Learned MLP Router (CPU)  │  ◄── BAAI/bge-small-en-v1.5 (ONNX)
-    │    384 → 128 → 64 → 4       │  ◄── 100% validation accuracy (2,400 samples)
-    │    P50: ~6.12 ms / ~3 ms MLP │  ◄── Fallback: Centroid cosine (threshold ≥ 0.55)
-    └────────────┬─────────────────┘
-                 │
-                 ├──► High confidence (≥ 0.70) → Direct route
-                 ├──► Low confidence (< 0.70) → Cascade evaluation
-                 │
-                 ▼
-    ┌────────────────────────────────────────────────────────┐
-    │  Confidence-Based Cascade (Optional)                   │
-    │  - Top-2 candidate adapters evaluated                  │
-    │  - Domain quality scoring (SQL/JSON/Code validators)   │
-    │  - Combined: 0.45 × RouterScore + 0.55 × QualityScore  │
-    │  - Rescues 93.8% of ambiguous queries (+56.3% boost)   │
-    └────────────────────────────┬───────────────────────────┘
-                                 │
-                                 ▼
-    ┌────────────────────────────────────────────────────────┐
-    │       Serving Gateway (Port 8080) + Web Dashboard      │
-    │  ┌──────────────────────────────────────────────────┐  │
-    │  │  Shared Frozen Base: Qwen2.5-1.5B-Instruct       │  │
-    │  │  - 4-bit NF4 (Local RTX 4050): 1.12 GB VRAM      │  │
-    │  │  - FP16 (Cloud T4):            2.87 GB VRAM      │  │
-    │  ├──────────────────────────────────────────────────┤  │
-    │  │  ► sql_lora   (15.08 MB)  [ACTIVATED]            │  │
-    │  │  ► json_lora  (15.08 MB)  [DORMANT]              │  │
-    │  │  ► code_lora  (15.08 MB)  [DORMANT]              │  │
-    │  └──────────────────────────────────────────────────┘  │
-    │  Engines: Native PEFT (Windows/Linux) or vLLM Batch    │
-    │  Dashboard: http://localhost:8080/dashboard/            │
-    └────────────────────────────┬───────────────────────────┘
-                                 │
-                                 ▼
-         JSON Output + Router Scores + Cascade Audit + Latency
+```text
+Request ──► Learned router (bge-small-en-v1.5 embeddings + MLP, CPU, ~13 ms p50)
+                │   confidence < 0.50 ──► base model (adapters disabled)
+                ▼
+        [optional cascade: generate with top-2 adapters, keep best validated output]
+                ▼
+        Gateway (FastAPI, one request at a time on the GPU)
+        ┌──────────────────────────────────────────────────┐
+        │ Qwen2.5-1.5B-Instruct, 4-bit NF4     1,100 MB     │
+        │ + sql_lora / json_lora / code_lora     +25 MB     │
+        └──────────────────────────────────────────────────┘
+                ▼
+Response + adapter used + router confidence + per-stage timings
 ```
 
 ---
 
-## 2. Centerpiece: Combined Correctness & Efficiency Matrix
+## 2. Results
 
-Empirical validation across all three domain tasks comparing zero-shot base model against specialized LoRA adapters on held-out test splits (60 samples per domain):
+### 2.1 Task quality: base model vs. LoRA adapters
 
-| Task / Domain | Primary Correctness Metric | Zero-Shot Baseline | Tuned LoRA Adapter | Specialization Delta ($\Delta$) | Adapter Size on Disk | P50 Request Latency |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SQL Generation** | SQLite Exact Match Rate | `90.0%` (54/60) | **`96.67%` (58/60)** | **`+6.67%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (950 ms native) |
-| **JSON Extraction** | Pydantic Schema Validity Rate | `53.33%` (32/60) | **`100.0%` (60/60)** | **`+46.67%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.8 s native) |
-| **Python Code** | Subprocess Unit Assertion Pass@1 | `80.0%` (48/60) | **`100.0%` (60/60)** | **`+20.00%`** | 15.08 MB (4.17 MB weights) | 211.69 ms (1.4 s native) |
-| **Semantic Router** | 4-Way Intent Classification | — | **`96.25%` (77/80)** | — | 133.0 MB (ONNX) | 10.71 ms (CPU) |
+Realistic test sets with natural-language prompts, none used for training. Brackets are 95% bootstrap
+confidence intervals; the difference interval is paired (same examples). An interval that includes 0
+means no measurable difference at this sample size.
 
----
+| Test set | n | Metric | Base model | LoRA adapter | Difference |
+| :--- | ---: | :--- | :--- | :--- | :--- |
+| SQL (gretel, queries run on real rows) | 300 | execution accuracy | 41.0% [35.3, 47.0] | 39.7% [34.0, 45.3] | −1.3 [−7.0, +4.3] |
+| JSON, in-scope order extraction | 60 | exact match | 53.3% [41.7, 66.7] | **73.3%** [61.7, 85.0] | **+20.0 [+6.7, +33.3]** |
+| JSON, out-of-scope schemas (paraloq) | 80 | field-level F1 | 44.5% [35.5, 54.1] | 34.7% [26.4, 42.7] | −9.8 [−21.2, +0.8] |
+| Code: HumanEval | 164 | pass@1 | 44.5% [36.6, 52.4] | 36.6% [29.3, 44.5] | −7.9 [−15.8, 0.0] |
+| Code: MBPP (sanitized test) | 257 | pass@1 | 45.1% [39.3, 51.4] | 50.2% [44.0, 56.4] | +5.1 [−0.4, +10.5] |
 
-## 3. GPU VRAM Conservation & Latency Profile
+What this says:
 
-### VRAM Footprint Comparison
+* **The JSON adapter clearly helps** on the task it was trained for (+20 points), mostly through format
+  discipline (60% strictly schema-valid outputs vs. 35% for the base model).
+* **The SQL adapter shows no measurable benefit** on realistic multi-table questions. It was trained on
+  600 simple single-table questions; failure analysis shows invented table/column names (12%) and wrong
+  join/filter logic (41%) rather than format problems.
+* **The code adapter helps slightly on MBPP-style tasks and hurts on HumanEval**: it learned the format of
+  its 600 templated training tasks more than a coding skill.
+* Adapters are narrow: the JSON adapter is worse than the base model on schemas it never saw.
 
-#### 1. Cloud Deployment (NVIDIA T4 16GB - FP16)
-* **3 Separate Dedicated Models (3x 1.5B):** Consumes **14.92 GB VRAM**, placing the T4 GPU on the brink of Out-Of-Memory (OOM) with only 1.08 GB remaining.
-* **Routed Multi-LoRA Architecture:** Consumes **8.02 GB VRAM**, delivering a **66.1% reduction in model weights** and leaving **7.98 GB of free headroom** for concurrent request KV-caches.
+The adapters' training data (`data/*_train.jsonl`) is the main limitation; see [Next steps](#7-next-steps).
 
-<p align="center">
-  <img src="results/memory_profile.png" alt="Memory Profile Chart" width="750" />
-</p>
+### 2.2 GPU memory
 
-| Metric | 3 Separate Fine-Tuned Models | Routed Multi-LoRA System | Savings / Difference |
-| :--- | :--- | :--- | :--- |
-| **Active Model Weights** | **8.62 GB** (3x 2.87 GB) | **2.92 GB** (1x 2.87 GB + 48 MB LoRAs) | **-66.1% (-5.70 GB)** |
-| **KV-Cache / Context Buffer** | 4.50 GB (3x 1.5 GB) | 4.50 GB (Unified dynamic pool) | Shared across adapters |
-| **CUDA Runtime Overhead** | 1.80 GB (3 contexts) | 0.60 GB (Single context) | **-66.7% (-1.20 GB)** |
-| **Total VRAM Consumption** | **14.92 GB** | **8.02 GB** | **-46.2% (-6.90 GB)** |
-| **Remaining T4 VRAM Headroom**| **1.08 GB** (Near OOM) | **7.98 GB** (Ample Headroom) | **+6.90 GB free** |
+| Quantity | MB | Source |
+| :--- | ---: | :--- |
+| Base model weights (NF4) | 1,100 | measured |
+| 3 LoRA adapters | 25 | measured |
+| Peak during generation (128 new tokens) | 1,144 | measured |
+| 3 separate fine-tuned models, weights only | 3,300 | **estimate** (3 × measured base weights) |
 
-#### 2. Local Workstation Deployment (NVIDIA GeForce RTX 4050 Laptop GPU 6GB - 4-bit NF4)
-* **Base Model (`Qwen2.5-1.5B-Instruct` in NF4):** Only **1,124.9 MB (1.12 GB) VRAM**.
-* **Pre-Registered Adapters (`sql`, `json`, `code`):** Stored directly in unified GPU memory with instant 0 ms switching.
-* **Free VRAM Headroom:** **~4.88 GB free**, allowing local serving without memory pressure.
+![Memory profile](results/memory_profile.png)
 
----
+### 2.3 Latency (100 sequential live requests, max_tokens=128)
 
-### Latency Breakdown (100 Requests Benchmark)
+| Stage | p50 | p95 |
+| :--- | ---: | ---: |
+| Routing | 12.6 ms | 19.6 ms |
+| Adapter switch | 5.7 ms | 18.7 ms |
+| Generation | 1,986 ms | 5,685 ms |
+| Server total | 2,010 ms | 5,721 ms |
 
-| Serving Pipeline Stage | Mean Latency | P50 (Median) | P95 Latency | P99 Latency |
-| :--- | :--- | :--- | :--- | :--- |
-| **1. Semantic Router (`fastembed` CPU)** | 6.05 ms | **6.12 ms** | 8.47 ms | 9.14 ms |
-| **2. Adapter Switch / Activation** | 8.38 ms | **10.84 ms** | 16.97 ms | 17.92 ms |
-| **3. Token Generation (128 Tokens)** | 197.88 ms | **198.27 ms** | 231.46 ms | 236.69 ms |
-| **Total End-to-End Latency** | **212.32 ms** | **211.69 ms** | **243.46 ms** | **254.94 ms** |
+Decode throughput is 16.9 tokens/s (p50). Routing and adapter switching are ~1% of request time;
+generation speed (4-bit bitsandbytes on a laptop GPU) dominates.
 
-<p align="center">
-  <img src="results/latency_breakdown.png" alt="Latency Breakdown Plot" width="850" />
-</p>
+![Latency breakdown](results/latency_breakdown.png)
 
----
+### 2.4 Router (test half of `data/router_testset.jsonl`, 166 prompts)
 
-## 4. Semantic Router Confusion Matrix (80 Held-Out Queries)
+| Router | Overall | Clear-domain | Ambiguous | p50 latency |
+| :--- | ---: | ---: | ---: | ---: |
+| **Learned v2 (default)** | **87.4%** [82.5, 92.2] | 100.0% | **72.4%** [61.8, 81.6] | 7.2 ms |
+| Centroid (cosine similarity) | 80.7% [74.1, 86.8] | 96.7% | 61.8% [50.0, 72.4] | 7.5 ms |
+| Learned v1 (retired) | 35.5% [28.3, 42.8] | 37.8% | 32.9% | 7.1 ms |
 
-Evaluated across 80 held-out queries (20 SQL, 20 JSON, 20 Code, 20 Out-of-Domain Base):
+The original learned router overfit to the fixed instruction text of its training prompts. v2 is
+retrained on varied public prompts (train splits of gretel, MBPP, paraloq, json-mode-eval, Dolly).
+The test set's clear-domain prompts come from test splits of the same sources; ambiguous prompts are
+hand-written and reviewed. A calibration half (164 prompts) is used for tuning; only the test half is reported.
 
-| True Intent \ Predicted | SQL Adapter | JSON Adapter | Code Adapter | Base Fallback | Precision | Recall | F1-Score |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **SQL Query** | **20** | 0 | 0 | 0 | 100.0% | 100.0% | 1.00 |
-| **JSON Extraction** | 0 | **20** | 0 | 0 | 90.9% | 100.0% | 0.95 |
-| **Code Generation** | 0 | 0 | **20** | 0 | 95.2% | 100.0% | 0.98 |
-| **Out-of-Domain Base** | 0 | 2 | 1 | **17** | 100.0% | 85.0% | 0.92 |
+### 2.5 Cascade (centroid router, thresholds calibrated on the calibration half)
 
-* **Overall Routing Accuracy:** **96.25% (77/80)**
-* **Macro Average F1-Score:** **0.9617**
-* **Specialized Adapter Accuracy:** **100.0% (60/60)** (Zero misclassification across domain tasks)
-* **P50 Router Latency:** **10.71 ms** (real-time on CPU via ONNX Runtime)
-* **P95 Router Latency:** **16.39 ms**
+| Subset | n | Direct routing | With cascade | Triggered | p50 latency |
+| :--- | ---: | ---: | ---: | ---: | :--- |
+| All | 166 | 80.7% | 81.9% | 58% | 5.0 s → 13.2 s |
+| Ambiguous | 76 | 61.8% | 68.4% | 65% | 6.7 s → 18.7 s |
+| Clear | 90 | 96.7% | 93.3% | 53% | 4.1 s → 11.8 s |
 
----
-
-## 5. Repository Layout
-
-```
-routed-multi-adapter-serving/
-├── adapters/                  # Trained LoRA checkpoints & model cards
-│   ├── sql_lora/              # SQL generation adapter (15.08 MB)
-│   ├── json_lora/             # JSON extraction adapter (15.08 MB)
-│   └── code_lora/             # Python code adapter (15.08 MB)
-├── dashboard/                 # Interactive web dashboard (served at /dashboard/)
-│   ├── index.html             # Dashboard layout & structure
-│   ├── style.css              # Clean dark theme styles
-│   └── app.js                 # Live/mock dual-mode client logic
-├── data/                      # 600 train / 60 holdout samples per task
-│   ├── sql_train.jsonl / sql_holdout.jsonl
-│   ├── json_train.jsonl / json_holdout.jsonl
-│   └── code_train.jsonl / code_holdout.jsonl
-├── eval/                      # Comprehensive evaluation harness
-│   ├── sql_eval.py            # In-memory SQLite execution & row matching
-│   ├── json_eval.py           # Pydantic schema validation & field accuracy
-│   ├── code_eval.py           # Subprocess unit assertion runner (5s timeout)
-│   ├── router_eval.py         # 4x4 confusion matrix & router benchmarking
-│   ├── eval_cascade.py        # Cascade routing accuracy evaluation
-│   ├── baseline_eval.py       # Zero-shot baseline vs. tuned adapter harness
-│   └── run_eval.py            # Unified test suite CLI
-├── models/                    # Trained router models
-│   └── learned_router.pkl     # MLP classifier (384→128→64→4) + label encoder
-├── notebooks/                 # Reproducible Jupyter Notebooks
-│   ├── colab_training_runner.ipynb  # 4-bit QLoRA training on GPU
-│   └── colab_serving_runner.ipynb   # vLLM multi-LoRA production serving
-├── results/                   # Empirical benchmark records & figures
-│   ├── memory_profile.png / memory_profile.json
-│   ├── latency_breakdown.png / latency_breakdown.json
-│   ├── router_eval.json
-│   ├── correctness_results.json
-│   ├── baseline_vs_tuned.json
-│   ├── cascade_eval.json      # Cascade benchmark results
-│   └── combined_benchmark_report.md
-├── scripts/                   # Tooling, data pipelines & benchmarks
-│   ├── prepare_sql_data.py    # Curates sql-create-context dataset
-│   ├── generate_json_data.py  # High-entropy synthetic JSON generator
-│   ├── prepare_code_data.py   # Code task & assertion test generator
-│   ├── validate_datasets.py   # Dataset integrity & 0% leakage validator
-│   ├── profile_memory.py      # VRAM calculator & chart generator
-│   ├── run_benchmarks.py      # 100-request latency benchmark runner
-│   ├── train_router.py        # Learned MLP router training script
-│   ├── generate_combined_report.py  # Report aggregator
-│   ├── smoke_test_gateway.py  # Automated 4-domain smoke test client
-│   └── demo_cli.py            # Interactive terminal demonstration
-├── src/                       # Core system source code
-│   ├── router.py              # Semantic & Learned MLP router (dual strategy)
-│   ├── cascade.py             # Confidence-based cascade routing logic
-│   ├── gateway.py             # Serving gateway (FastAPI + dashboard + cascade)
-│   └── train_loras.py         # QLoRA SFTTrainer training pipeline
-├── eval_spec.md               # Formal metrics, test protocols & baseline specs
-├── requirements.txt           # Local client, server & evaluation dependencies
-├── requirements-colab.txt     # Cloud GPU dependencies (vLLM, PEFT, TRL)
-└── README.md                  # System documentation
-```
+The cascade's gain (+1.2 points overall) is within noise, costs ~2.6× latency, and hurts clear prompts.
+**It is off by default**; switching to the learned v2 router gives a larger gain at no extra cost.
 
 ---
 
-## 6. Quickstart & Reproducibility Guide
-
-### Step 1: Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### Step 2: Generate & Validate Datasets
-```bash
-python scripts/generate_json_data.py
-python scripts/prepare_sql_data.py
-python scripts/prepare_code_data.py
-python scripts/validate_datasets.py
-```
-
-### Step 3: Train Adapters (Local GPU or Colab)
-* **Local GPU (Windows / Linux with CUDA):**
-  ```bash
-  python src/train_loras.py --task all --epochs 3 --batch-size 4
-  ```
-* **Cloud GPU (Google Colab / Kaggle T4):**
-  Open [notebooks/colab_training_runner.ipynb](notebooks/colab_training_runner.ipynb) to train all 3 adapters in ~15 minutes.
-
-### Step 4: Run Evaluation Harness
-```bash
-# Verify all tasks against gold reference test suites
-python -m eval.run_eval --task all --backend gold
-
-# Run 80-query router evaluation (confusion matrix)
-python eval/router_eval.py --threshold 0.55
-
-# Run zero-shot baseline comparison
-python eval/baseline_eval.py --mock
-```
-
----
-
-## 7. Serving Gateway Deployment
-
-### Pathway A: Native PEFT Serving Engine (Windows / Local GPU)
-Ideal for local development on consumer GPUs (e.g. RTX 4050/3060/4070). Automatically loads 4-bit base model in 1.12 GB VRAM and registers adapters:
+## 3. Quickstart
 
 ```bash
-# Standard (centroid router)
+pip install -r requirements.txt                      # gateway, router, evaluation
+pip install torch transformers peft bitsandbytes accelerate   # PEFT engine (local GPU)
+```
+
+Adapter weights (`adapters/*/adapter_model.safetensors`) are not in git; train them (section 5) or copy them in.
+Model files are read from the Hugging Face cache; anything downloaded goes to the repo-local `.model_cache/`.
+
+### Serving
+
+```bash
+# Local GPU, PEFT engine, learned v2 router (default)
 python -m src.gateway --port 8080 --engine peft
 
-# With learned router + cascade (recommended)
-python -m src.gateway --port 8080 --engine peft --router-strategy learned --cascade
+# Optional cascade with calibrated thresholds
+python -m src.gateway --port 8080 --engine peft --cascade --cascade-threshold 0.35 --cascade-margin 0.10
+
+# CPU-only demo with canned responses (for the dashboard / pipeline tests; not a model)
+python -m src.gateway --port 8080 --mock-vllm
 ```
 
-The **interactive dashboard** is available at `http://localhost:8080/dashboard/`.
-
-### Pathway B: vLLM Multi-LoRA Engine (Linux / Cloud Production)
-Ideal for high-throughput batch serving on cloud instances (e.g. NVIDIA T4 / A10G):
+vLLM backend (Linux; not benchmarked in this repo):
 
 ```bash
-# 1. Start vLLM OpenAI API server with LoRA enabled
-python3 -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-1.5B-Instruct \
-    --dtype float16 \
-    --enable-lora \
-    --lora-modules \
-        sql=adapters/sql_lora \
-        json=adapters/json_lora \
-        code=adapters/code_lora \
-    --max-loras 3 \
-    --port 8000
-
-# 2. Start Gateway connected to vLLM
+python3 -m vllm.entrypoints.openai.api_server --model Qwen/Qwen2.5-1.5B-Instruct --dtype float16 \
+    --enable-lora --lora-modules sql-adapter=adapters/sql_lora json-adapter=adapters/json_lora \
+    code-adapter=adapters/code_lora --max-loras 3 --port 8000
 python -m src.gateway --port 8080 --engine vllm
 ```
 
-### Pathway C: Mock Mode (CPU-only / CI Testing / Dashboard Demo)
-```bash
-python -m src.gateway --port 8080 --mock-vllm --cascade
-```
+Dashboard: `http://127.0.0.1:8080/dashboard/`. When the gateway is unreachable it falls back to clearly
+labelled mock responses.
 
----
+### API
 
-## 8. Interactive Web Dashboard
-
-The serving system includes a clean, minimal **interactive web dashboard** served directly from the gateway at `http://localhost:8080/dashboard/`.
-
-### Dashboard Tabs:
-
-**Playground:**
-- One-click preset prompts for SQL, JSON, Code, General, and Edge Case queries
-- Configurable token limit, temperature, and forced adapter override
-- Real-time Canvas 2D radar chart showing per-adapter confidence distribution
-- Animated pipeline visualization: Prompt → Router → LoRA Adapter → Qwen2.5 Engine
-- Cascade audit panel showing candidate evaluations and quality scores when triggered
-- Request history table with re-run buttons
-
-**Benchmarks:**
-- Correctness comparison table (Baseline vs Tuned LoRA across 3 tasks)
-- VRAM conservation breakdown (14.92 GB → 8.02 GB on T4, 1.12 GB on RTX 4050)
-- Latency percentile breakdown (100 requests)
-- Router confusion matrix (80 queries, 96.25% accuracy)
-
-### Dual Operation Mode:
-The dashboard seamlessly operates in **Live** mode (connected to running gateway) or **Offline Mock** mode (standalone demo without GPU).
-
----
-
-## 9. Advanced Routing Strategies
-
-### 1. Learned Router (2-Layer Neural MLP Classifier)
-In addition to the baseline centroid-cosine router, the system features a **trained 2-layer MLP classifier** (`384 → 128 → 64 → 4`) trained on BGE-small embeddings across 2,400 samples (600 SQL, 600 JSON, 600 Code, 600 Base):
-* **Validation Accuracy:** **100.0% (360/360)**
-* **Zero False Adapter Activations:** Correctly identifies 100% of out-of-domain / base queries without false activations.
-* **Inference Latency:** **~3.0 ms** on CPU (FastEmbed + ONNX Runtime).
-* **Train Command:**
-  ```bash
-  python scripts/train_router.py
-  ```
-* **Evaluation Command:**
-  ```bash
-  python eval/router_eval.py --strategy learned --output results/router_eval_learned.json
-  ```
-
-### 2. Confidence-Based Cascade Routing Strategy
-When the primary router confidence falls below the uncertainty threshold ($\tau < 0.70$) or the top-2 margin is narrow ($\Delta \le 0.15$):
-1. **Dual Candidate Evaluation:** Identifies top-2 candidate adapters.
-2. **Domain Quality Scoring:** Runs lightweight rule-based validators:
-   * **SQL:** SQLite syntax completeness check (`sqlite3.complete_statement`) and balanced parentheses.
-   * **JSON:** Strict Pydantic / JSON schema conformity against expected extraction fields (`user`, `order_id`, `amount`).
-   * **Python Code:** Valid Python AST parsing (`ast.parse`) and function definition verification (`def`).
-3. **Combined Decision Function:** Ranks candidates by $0.45 \times \text{RouterScore} + 0.55 \times \text{DomainQualityScore}$.
-4. **Empirical Results on Ambiguous / Composite Queries:**
-   * **Direct Routing Accuracy:** `37.5%` (6/16)
-   * **Cascade Routing Accuracy:** **`93.8%` (15/16) (+56.3% accuracy boost)**
-   * **Misroutes Rescued:** 9 out of 10 ambiguous cases successfully corrected.
-* **Evaluation Command:**
-  ```bash
-  python eval/eval_cascade.py --strategy auto --output results/cascade_eval.json
-  ```
-
----
-
-## 10. Verifying Gateway with Smoke Test
-
-While the gateway is running on port 8080, run the automated 4-domain smoke test:
-
-```bash
-python -m scripts.smoke_test_gateway --url http://localhost:8080
-```
-
-**Live Smoke Test Output:**
-```
-======================================================================
-RUNNING SERVING GATEWAY SMOKE TEST AGAINST: http://localhost:8080
-======================================================================
-
-[Step 1] Checking Gateway Health Endpoint...
-[OK] Health Check OK: {
-  'status': 'healthy',
-  'gateway_port': 8080,
-  'engine': 'peft',
-  'gpu_device': 'NVIDIA GeForce RTX 4050 Laptop GPU',
-  'vram_allocated_mb': 1124.9,
-  'registered_adapters': ['sql', 'json', 'code', 'base'],
-  'base_model': 'Qwen/Qwen2.5-1.5B-Instruct'
-}
-
-[Step 2] Sending Test Queries Across 4 Routing Domains...
-
----------------------------------------------------------------------------
-Domain       | Expected | Routed To | Conf   | Route   | Total   | Status
----------------------------------------------------------------------------
-SQL          | sql      | sql       | 0.8177 | 10.9 ms | 950 ms  | PASS [OK]
-JSON         | json     | json      | 0.7932 |  7.8 ms | 1.8 s   | PASS [OK]
-Code         | code     | code      | 0.7412 |  6.9 ms | 1.4 s   | PASS [OK]
-Base (Gen)   | base     | base      | 0.5142 |  6.3 ms | 820 ms  | PASS [OK]
----------------------------------------------------------------------------
-
-[SUMMARY] Smoke test completed: 4/4 Passed (100.0%)
-```
-
----
-
-## 11. API Usage Examples
-
-All inference requests go through the `/v1/chat` endpoint:
-
-### Python Client
 ```python
 import requests
 
-# Standard inference (router auto-selects adapter)
-response = requests.post(
-    "http://localhost:8080/v1/chat",
-    json={
-        "prompt": "Write a SQL query to find the top 5 customers by total order amount.",
-        "max_tokens": 256,
-        "temperature": 0.0,
-    }
-)
+r = requests.post("http://127.0.0.1:8080/v1/chat", json={
+    "prompt": "Write a SQL query to find the top 5 customers by total order amount.",
+    "max_tokens": 256,          # 1..2048
+    "temperature": 0.0,         # 0 = greedy
+    # "force_adapter": "sql",   # skip the router: sql | json | code | base
+    # "enable_cascade": True,
+}).json()
 
-result = response.json()
-print("Selected Adapter :", result["adapter_used"])          # "sql"
-print("Router Strategy  :", result["router_strategy"])        # "learned"
-print("Confidence       :", result["router_confidence"])      # 0.91
-print("Routing Latency  :", result["routing_latency_ms"], "ms")
-print("Total Latency    :", result["total_latency_ms"], "ms")
-print("Cascade Triggered:", result["cascade_triggered"])      # False
-print("Response:\n", result["response"])
-
-# With cascade enabled and forced strategy
-response = requests.post(
-    "http://localhost:8080/v1/chat",
-    json={
-        "prompt": "Create a database migration script in Python.",
-        "enable_cascade": True,
-        "router_strategy": "learned",
-    }
-)
+print(r["adapter_used"], r["router_confidence"], r["response"])
+print(r["routing_latency_ms"], r["adapter_switch_ms"], r["generation_latency_ms"], r["tokens_per_second"])
 ```
 
-### Bash cURL (Linux / macOS)
-```bash
-curl -X POST http://localhost:8080/v1/chat \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "Extract user, order_id, and amount from: Order #TXN-98421 for Sarah Jenkins totaling $149.50"}'
-```
-
-### Router Scores Only (No Generation)
-```bash
-curl "http://localhost:8080/v1/router/scores?prompt=Write+a+SQL+query+to+get+all+users"
-```
-
-Returns per-adapter confidence scores without running token generation — useful for router telemetry and visualization.
+Router scores without generation: `GET /v1/router/scores?prompt=...`. Health: `GET /health`.
+Invalid requests return 422; an unreachable vLLM backend returns 503.
 
 ---
 
-## 12. Evaluation & Empirical Reports
+## 4. Evaluation
 
-For detailed specifications and empirical benchmark logs, see:
-* **[eval_spec.md](eval_spec.md)**: Formal evaluation specification, sandbox design, and correctness protocols.
-* **[results/combined_benchmark_report.md](results/combined_benchmark_report.md)**: Comprehensive empirical evaluation report.
-* **[results/cascade_eval.json](results/cascade_eval.json)**: Cascade routing benchmark (93.8% accuracy on ambiguous queries).
+```bash
+# Build the test sets (downloads public datasets into .model_cache/)
+python scripts/build_eval_sets.py          # data/eval/: gretel SQL, HumanEval, MBPP, paraloq
+python scripts/build_router_testset.py     # data/router_testset.jsonl (calibration / test halves)
+python scripts/build_validation_sets.py    # data/*_val.jsonl for adapter training
+
+# Scorer sanity check: gold answers must score 100%
+python -m eval.run_eval --task all --backend gold --yes
+
+# Unit tests (no GPU needed)
+python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
+.venv/Scripts/python -m pytest
+
+# Full measured benchmark (~8 h on an RTX 4050; resumable)
+python scripts/run_all_benchmarks.py --yes             # Ctrl+C to stop
+python scripts/run_all_benchmarks.py --yes --resume    # continue from saved outputs
+```
+
+Before a benchmark run: plug in, set Windows power mode to "Best performance", close heavy apps
+(CPU power saving alone can make routing 10× slower).
+
+Code evaluation runs model-written programs: it explains what it will run and asks first (unless `--yes`),
+runs them in `.eval_sandbox/` inside the repo with a timeout, and deletes the folder afterwards. This is
+basic isolation, not a security boundary.
+
+| Test set | Source | License |
+| :--- | :--- | :--- |
+| SQL | gretelai/synthetic_text_to_sql (test), schema shown as CREATE TABLE / compact / prose | Apache-2.0 |
+| JSON in-scope | hand-written, reviewed | project |
+| JSON out-of-scope | paraloq/json_data_extraction | Apache-2.0 |
+| Code | openai/openai_humaneval, MBPP sanitized test | MIT, CC BY 4.0 |
+| Router | gretel, MBPP, Dolly (test splits / unused rows) + hand-written ambiguous prompts | mixed |
+
+---
+
+## 5. Training
+
+```bash
+python src/train_loras.py --task all --epochs 2       # QLoRA; keeps the best epoch by validation loss
+python scripts/train_router.py                        # learned router v2 -> models/learned_router_v2.pkl
+```
+
+Colab: [notebooks/colab_training_runner.ipynb](notebooks/colab_training_runner.ipynb).
+
+---
+
+## 6. Repository layout
+
+```text
+adapters/            LoRA adapters (configs in git, weights not)
+dashboard/           web dashboard served at /dashboard/
+data/                adapter train/holdout/val sets, router test set
+data/eval/           realistic test sets (see section 4)
+eval/                scorers, runners, router + cascade evaluation, bootstrap CIs
+models/              learned router v2
+results/             measured results, charts, raw model outputs
+scripts/             data builders, benchmark runner, VRAM + latency profilers, report generator
+src/                 gateway, router, cascade, adapter training, repo-local cache setup
+tests/               unit tests (no GPU needed)
+```
+
+---
+
+## 7. Next steps
+
+1. **Retrain the SQL and code adapters on real, varied data** (e.g. gretel's train split with multi-table
+   queries and mixed schema styles; MBPP-style and docstring-style code), with loss on answer tokens only
+   and validation-based checkpoint selection. Re-measure against the baselines above.
+2. Broaden JSON training to varied schemas if general extraction is the goal.
+3. Try Qwen2.5-3B (fits in 6 GB at 4-bit) to raise the reasoning ceiling.
+4. Batch requests with different adapters (PEFT `adapter_names`) or use vLLM for throughput; the gateway
+   currently serves one request at a time.

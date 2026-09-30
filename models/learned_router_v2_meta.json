@@ -1,0 +1,18 @@
+{
+  "model_file": "learned_router_v2.pkl",
+  "training_data": "v2",
+  "note": "validation split is in-distribution with the training data; see results/router_eval_*.json for accuracy on the realistic test set",
+  "embedding_model": "BAAI/bge-small-en-v1.5",
+  "architecture": "MLP(384 -> 128 -> 64 -> 4)",
+  "classes": [
+    "sql",
+    "json",
+    "code",
+    "base"
+  ],
+  "num_train_samples": 2040,
+  "num_val_samples": 360,
+  "validation_accuracy": 0.9917,
+  "iterations": 24,
+  "training_time_sec": 2.5
+}

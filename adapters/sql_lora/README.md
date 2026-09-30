@@ -50,15 +50,18 @@ tags:
 
 ---
 
-## 3. Empirical Evaluation Results
+## 3. Evaluation Results (measured)
 
-Evaluated against 60 held-out test schemas in an isolated in-memory SQLite sandbox (`eval/sql_eval.py`):
+300 questions from gretelai/synthetic_text_to_sql (test split); queries run on each question's own data rows
+(`data/eval/sql_gretel.jsonl`, `eval/sql_eval.py`). 95% bootstrap CIs; the difference CI is paired.
 
-| Evaluation Metric | Zero-Shot Base (`Qwen2.5-1.5B`) | Tuned `sql_lora` Adapter | Specialization Gain ($\Delta$) |
+| Metric | Base `Qwen2.5-1.5B-Instruct` | `sql_lora` | Difference |
 | :--- | :--- | :--- | :--- |
-| **Execution Rate ($R_{\text{exec}}$)** | 95.0% (57/60) | **100.0% (60/60)** | **+5.0%** |
-| **Exact Match Rate ($R_{\text{match}}$)** | 90.0% (54/60) | **96.67% (58/60)** | **+6.67%** |
-| **Mean Inference Time** | ~1.2s | **~950 ms** | -250 ms |
+| Execution accuracy | 41.0% [35.3, 47.0] | 39.7% [34.0, 45.3] | -1.3 [-7.0, +4.3] |
+
+No measurable benefit on realistic, often multi-table questions: the adapter was trained on 600 simple
+single-table questions. Main failure modes: wrong join/filter logic (41%), invented table or column names (12%).
+The older 96.67% figure came from a broken metric (queries run on empty tables) and is withdrawn.
 
 ---
 

@@ -24,44 +24,169 @@ def clean_json(raw_text: str) -> str:
             text = text[first_brace:last_brace + 1]
     return text.strip()
 
+def _norm_text(v) -> str:
+    return " ".join(str(v).split()).casefold()
+
+
+def _to_number(v):
+    """Parse amounts like 150, "59.90", "$1,240.75", "129,90 kr" or "R$ 3.200,00"; None if not a number."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = re.sub(r"[^\d.,-]", "", str(v)).strip(".,")  # strip(): "Rs. 2,499" -> "2,499"
+    if "," in s and "." in s:  # the separator that comes last is the decimal point
+        s = s.replace(",", "") if s.rfind(".") > s.rfind(",") else s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".") if re.fullmatch(r"-?\d+,\d{2}", s) else s.replace(",", "")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _field_matches(field: str, val_gen, val_gold) -> bool:
+    if field == "amount":
+        num = _to_number(val_gen)
+        return num is not None and abs(num - float(val_gold)) < 1e-3
+    return isinstance(val_gen, str) and _norm_text(val_gen) == _norm_text(val_gold)
+
+
 def evaluate_json(examples: List[Dict], generate_fn: Callable[[str], str]) -> Dict[str, float]:
-    valid = 0
-    field_correct = 0
-    field_total = 0
+    """
+    {user, order_id, amount} extraction.
+      schema_valid_rate : output parses and has the three fields with valid types (amount must be a number)
+      exact_match_rate  : all three values correct, over ALL examples. Text ignores case/extra spaces;
+                          amount accepts numeric strings like "$150.00" (prompts never ask for a number type)
+      field_accuracy    : correct fields among schema-valid outputs only
+    """
+    from eval.stats import with_ci
+
+    valid = exact = field_correct = field_total = 0
+    per_valid, per_exact = [], []
     n = len(examples)
 
     for ex in examples:
-        raw_gen = generate_fn(ex["prompt"])
-        cleaned = clean_json(raw_gen)
         gold = ex["gold_json"]
-
         try:
-            parsed_dict = json.loads(cleaned)
-            parsed = ExtractionSchema(**parsed_dict)
-            valid += 1
-
-            for field in ["user", "order_id", "amount"]:
-                field_total += 1
-                val_gen = getattr(parsed, field, None)
-                val_gold = gold.get(field)
-
-                if field == "amount" and isinstance(val_gen, (int, float)) and isinstance(val_gold, (int, float)):
-                    if abs(float(val_gen) - float(val_gold)) < 1e-3:
-                        field_correct += 1
-                elif str(val_gen).strip() == str(val_gold).strip():
-                    field_correct += 1
-        except (json.JSONDecodeError, ValidationError, TypeError):
-            # Sample failed schema validation or JSON decoding
+            data = json.loads(clean_json(generate_fn(ex["prompt"])))
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict):
+            per_valid.append(0)
+            per_exact.append(0)
             continue
 
-    return {
+        matches = [_field_matches(f, data.get(f), gold[f]) for f in ["user", "order_id", "amount"]]
+        exact += all(matches)
+        per_exact.append(int(all(matches)))
+        try:
+            ExtractionSchema(**data)
+            is_valid = 1
+        except (ValidationError, TypeError):
+            is_valid = 0
+        valid += is_valid
+        per_valid.append(is_valid)
+        if is_valid:
+            field_total += 3
+            field_correct += sum(matches)
+
+    metrics = {
         "total_samples": n,
         "schema_valid_rate": round(valid / n, 4) if n else 0.0,
+        "exact_match_rate": round(exact / n, 4) if n else 0.0,
         "field_accuracy": round(field_correct / field_total, 4) if field_total else 0.0,
         "valid_count": valid,
+        "exact_match_count": exact,
         "field_correct_count": field_correct,
         "field_total_count": field_total,
+        "per_example_correct": per_exact,
+        "per_example_valid": per_valid,
     }
+    with_ci(metrics, "schema_valid_rate", per_valid)
+    return with_ci(metrics, "exact_match_rate", per_exact)
+
+
+def _flatten(obj, prefix="") -> List[tuple]:
+    """Flatten JSON into (path, normalized leaf value) pairs."""
+    if isinstance(obj, dict):
+        out = []
+        for k, v in obj.items():
+            out += _flatten(v, f"{prefix}.{k}" if prefix else str(k))
+        return out
+    if isinstance(obj, list):
+        out = []
+        for i, v in enumerate(obj):
+            out += _flatten(v, f"{prefix}[{i}]")
+        return out
+    if isinstance(obj, bool) or obj is None:
+        return [(prefix, obj)]
+    if isinstance(obj, (int, float)):
+        return [(prefix, round(float(obj), 4))]
+    return [(prefix, _norm_text(obj))]
+
+
+def evaluate_json_schema(examples: List[Dict], generate_fn: Callable[[str], str]) -> Dict[str, float]:
+    """
+    Free-form schema extraction (e.g. paraloq). Per example:
+      parse       : output parses as JSON
+      schema_valid: output validates against the example's JSON schema (needs the `jsonschema`
+                    package; reported as null when it is not installed)
+      leaf F1     : overlap of (path, value) leaves with the gold JSON
+      exact match : parsed output equals the gold JSON after normalization
+    """
+    from collections import Counter
+    from eval.stats import with_ci
+
+    try:
+        import jsonschema  # optional dependency
+    except ImportError:
+        jsonschema = None
+
+    per_parse, per_schema, per_f1, per_exact = [], [], [], []
+    for ex in examples:
+        raw_gen = generate_fn(ex["prompt"])
+        try:
+            parsed = json.loads(clean_json(raw_gen))
+        except json.JSONDecodeError:
+            per_parse.append(0)
+            per_schema.append(0 if jsonschema else None)
+            per_f1.append(0.0)
+            per_exact.append(0)
+            continue
+
+        per_parse.append(1)
+        if jsonschema:
+            try:
+                jsonschema.validate(parsed, ex["schema"])
+                per_schema.append(1)
+            except Exception:
+                per_schema.append(0)
+        else:
+            per_schema.append(None)
+
+        gold_leaves, pred_leaves = Counter(_flatten(ex["gold_json"])), Counter(_flatten(parsed))
+        overlap = sum((gold_leaves & pred_leaves).values())
+        precision = overlap / sum(pred_leaves.values()) if pred_leaves else 0.0
+        recall = overlap / sum(gold_leaves.values()) if gold_leaves else 0.0
+        per_f1.append(2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+        per_exact.append(int(gold_leaves == pred_leaves))
+
+    n = len(examples)
+    mean = lambda xs: round(sum(xs) / len(xs), 4) if xs else 0.0
+    schema_vals = [v for v in per_schema if v is not None]
+    metrics = {
+        "total_samples": n,
+        "parse_rate": mean(per_parse),
+        "schema_valid_rate": mean(schema_vals) if jsonschema else None,
+        "leaf_f1": mean(per_f1),
+        "exact_match_rate": mean(per_exact),
+        "per_example_correct": per_exact,
+        "per_example_leaf_f1": [round(x, 4) for x in per_f1],
+    }
+    with_ci(metrics, "leaf_f1", per_f1)
+    with_ci(metrics, "parse_rate", per_parse)
+    return metrics
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate JSON Extraction Correctness")

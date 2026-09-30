@@ -3,12 +3,15 @@ import sys
 import time
 import pickle
 from typing import Dict, List, Tuple, Optional
+
+from src import local_cache  # noqa: F401  (must run before fastembed is imported)
+
 import numpy as np
 from fastembed import TextEmbedding
 
 ROUTER_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 DEFAULT_LEARNED_MODEL_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "models", "learned_router.pkl"
+    os.path.dirname(os.path.dirname(__file__)), "models", "learned_router_v2.pkl"
 )
 
 # Singleton embedder
@@ -170,6 +173,11 @@ class LearnedRouter:
 # Router cache
 _routers: Dict[str, object] = {}
 
+# Strategy used for 'auto': the router that scores best on the test half of the realistic test set
+# (data/router_testset.jsonl): learned v2 87.4% vs centroid 80.7% (results/router_eval_*.json).
+AUTO_STRATEGY = "learned"
+
+
 def get_router(
     strategy: Optional[str] = None,
     threshold: Optional[float] = None,
@@ -180,7 +188,7 @@ def get_router(
     Strategy can be:
       - 'learned': Uses the trained MLP classifier
       - 'centroid': Uses the cosine-similarity centroid router
-      - None / 'auto': Uses 'learned' if model file exists, else 'centroid'
+      - None / 'auto': Uses AUTO_STRATEGY (the best router on the realistic test set)
     """
     global _routers
 
@@ -188,7 +196,7 @@ def get_router(
         strategy = os.environ.get("ROUTER_STRATEGY", "auto").lower()
 
     if strategy == "auto":
-        strategy = "learned" if os.path.exists(model_path) else "centroid"
+        strategy = AUTO_STRATEGY
 
     cache_key = f"{strategy}_{threshold}_{model_path}"
     if cache_key in _routers:
