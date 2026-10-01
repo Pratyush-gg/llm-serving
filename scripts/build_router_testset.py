@@ -1,16 +1,4 @@
-"""
-Build the router / cascade test set (data/router_testset.jsonl).
-
-Clear-domain prompts come from public datasets that were NOT used for training, phrased the way
-real users write them (no fixed instruction template):
-  sql  : gretelai/synthetic_text_to_sql (test split)       - Apache-2.0
-  code : google-research-datasets/mbpp (full, test split)  - CC BY 4.0
-  base : databricks/databricks-dolly-15k (QA / brainstorming / creative writing) - CC BY-SA 3.0
-JSON-extraction and ambiguous prompts are hand-written in data/router_testset_handwritten.jsonl
-(reviewed by the project owner before use).
-
-All downloads go to the repo-local .model_cache/ folder.
-"""
+"""Build the router test set (data/router_testset.jsonl) with calibration and test halves."""
 import os
 import sys
 import json
@@ -20,8 +8,7 @@ import argparse
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, REPO_ROOT)
 
-# Dataset downloads must stay inside the repo: point the hub cache here too (this script
-# does not need the base model, which is read from the global cache elsewhere).
+# Keep dataset downloads inside the repo.
 os.environ.setdefault("HF_HUB_CACHE", os.path.join(REPO_ROOT, ".model_cache", "hub"))
 from src import local_cache  # noqa: F401,E402
 
@@ -38,8 +25,7 @@ def public_sql(n, rng):
     """Schema shown in rotating styles (no data rows) so CREATE TABLE is not a giveaway."""
     ds = load_dataset("gretelai/synthetic_text_to_sql", split="test")
     idx = rng.sample(range(len(ds)), n)  # same draw as before, so later samples (code, base) are unchanged
-    # Some gretel schemas are not valid SQLite and cannot be re-rendered; replace them from a
-    # separate RNG so the shared RNG's sequence (and thus the code/base samples) is unaffected.
+    # Replace schemas SQLite can't parse using a separate RNG, so later samples stay unchanged.
     replacement_rng = random.Random(9001)
     rows = []
     for k, i in enumerate(idx):
@@ -95,8 +81,7 @@ def handwritten():
 
 
 def assign_splits(rows, rng):
-    """Stratified 50/50 split per (category, label): 'calibration' is used to tune thresholds,
-    'test' is only used for reported results."""
+    """Stratified 50/50 calibration/test split per (category, label)."""
     groups = {}
     for r in rows:
         groups.setdefault((r["category"], r["label"]), []).append(r)

@@ -45,6 +45,7 @@ adapters/*/*
 !adapters/.gitkeep
 !adapters/*/README.md
 !adapters/*/adapter_config.json
+!adapters/*/adapter_model.safetensors
 
 # Jupyter Notebook Checkpoints
 .ipynb_checkpoints/

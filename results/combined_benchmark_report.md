@@ -1,16 +1,16 @@
 # Combined Benchmark Report
 **Routed Multi-Adapter LLM Serving System**
-*Generated: 2026-09-30 22:32:44. All figures are measured unless marked as an estimate.*
+*Generated: 2026-10-01 18:48:42. All figures are measured unless marked as an estimate.*
 
 ## 1. Task quality: base model vs. LoRA adapters (natural-language prompts)
 
 | Test set | Metric | n | Base model | LoRA adapter | Difference (95% CI, paired) |
 | :--- | :--- | ---: | :--- | :--- | :--- |
-| SQL (gretel, real data rows) | `execution_accuracy` | 300 | 41.0% [35.3, 47.0] | **39.7%** [34.0, 45.3] | -1.3 pts [-7.0, +4.3] |
+| SQL (gretel, real data rows) | `execution_accuracy` | 300 | 41.0% [35.3, 47.0] | **56.7%** [51.0, 62.3] | +15.7 pts [+10.0, +21.3] |
 | JSON in-scope (order extraction) | `exact_match_rate` | 60 | 53.3% [41.7, 66.7] | **73.3%** [61.7, 85.0] | +20.0 pts [+6.7, +33.3] |
 | JSON out-of-scope (paraloq schemas) | `leaf_f1` | 80 | 44.5% [35.5, 54.1] | **34.7%** [26.4, 42.7] | -9.8 pts [-21.2, +0.8] |
-| Code: HumanEval | `pass_at_1` | 164 | 44.5% [36.6, 52.4] | **36.6%** [29.3, 44.5] | -7.9 pts [-15.8, +0.0] |
-| Code: MBPP (sanitized test) | `pass_at_1` | 257 | 45.1% [39.3, 51.4] | **50.2%** [44.0, 56.4] | +5.1 pts [-0.4, +10.5] |
+| Code: HumanEval | `pass_at_1` | 164 | 44.5% [36.6, 52.4] | **43.9%** [36.0, 51.8] | -0.6 pts [-8.5, +6.7] |
+| Code: MBPP (sanitized test) | `pass_at_1` | 257 | 45.1% [39.3, 51.4] | **51.0%** [45.1, 57.2] | +5.8 pts [+0.0, +11.7] |
 
 Brackets are 95% bootstrap confidence intervals. A difference whose interval includes 0 is not
 distinguishable from noise at this sample size. Raw model outputs: `results/raw_outputs/`.
@@ -19,9 +19,9 @@ distinguishable from noise at this sample size. Raw model outputs: `results/raw_
 
 | Schema format | n | Base model | LoRA adapter |
 | :--- | ---: | :--- | :--- |
-| create | 100 | 47.0% [38.0, 58.0] | 42.0% [33.0, 52.0] |
-| compact | 100 | 35.0% [26.0, 44.0] | 33.0% [24.0, 42.0] |
-| prose | 100 | 41.0% [32.0, 50.0] | 44.0% [34.0, 53.0] |
+| create | 100 | 47.0% [38.0, 58.0] | 61.0% [51.0, 71.0] |
+| compact | 100 | 35.0% [26.0, 44.0] | 54.0% [44.0, 64.0] |
+| prose | 100 | 41.0% [32.0, 50.0] | 55.0% [45.0, 65.0] |
 
 ## 2. GPU memory (measured on NVIDIA GeForce RTX 4050 Laptop GPU, bitsandbytes 4-bit NF4, double quant)
 
@@ -39,14 +39,14 @@ distinguishable from noise at this sample size. Raw model outputs: `results/raw_
 
 | Stage | mean | p50 | p95 | p99 |
 | :--- | ---: | ---: | ---: | ---: |
-| Routing | 12.0 ms | 12.6 ms | 19.6 ms | 25.3 ms |
-| Adapter switch | 8.6 ms | 5.7 ms | 18.7 ms | 29.7 ms |
-| Generation | 2,769.8 ms | 1,986.1 ms | 5,685.1 ms | 8,172.4 ms |
-| Other server overhead | 1.9 ms | 1.4 ms | 3.5 ms | 4.4 ms |
-| Server total | 2,792.2 ms | 2,009.7 ms | 5,721.4 ms | 8,217.8 ms |
-| Client round trip | 2,807.5 ms | 2,019.8 ms | 5,724.9 ms | 8,239.1 ms |
+| Routing | 16.9 ms | 17.7 ms | 26.0 ms | 28.3 ms |
+| Adapter switch | 12.4 ms | 8.6 ms | 35.0 ms | 40.9 ms |
+| Generation | 4,815.2 ms | 3,416.4 ms | 10,617.2 ms | 11,758.0 ms |
+| Other server overhead | 2.8 ms | 2.0 ms | 7.9 ms | 9.4 ms |
+| Server total | 4,847.3 ms | 3,448.8 ms | 10,656.8 ms | 11,815.3 ms |
+| Client round trip | 4,863.4 ms | 3,476.5 ms | 10,676.3 ms | 11,838.6 ms |
 
-Decode throughput: 16.9 tokens/s (p50); generated tokens per request: 33 (p50).
+Decode throughput: 9.7 tokens/s (p50); generated tokens per request: 34 (p50).
 
 Percentiles are per stage and do not add up; the chart stacks means.
 
@@ -56,18 +56,18 @@ Percentiles are per stage and do not add up; the chart stacks means.
 
 | Router | Overall | Clear-domain | Ambiguous | p50 latency |
 | :--- | ---: | ---: | ---: | ---: |
-| Centroid (cosine) | 80.7% [74.1, 86.8] | 96.7% [92.2, 100.0] | 61.8% [50.0, 72.4] | 7.46 ms |
+| Centroid (cosine) | 80.7% [74.1, 86.8] | 96.7% [92.2, 100.0] | 61.8% [50.0, 72.4] | 9.38 ms |
 | Learned v1 (original, retired) | 35.5% [28.3, 42.8] | 37.8% [27.8, 47.8] | 32.9% [22.4, 43.4] | 7.07 ms |
-| Learned v2 (default) | 87.4% [82.5, 92.2] | 100.0% [100.0, 100.0] | 72.4% [61.8, 81.6] | 7.15 ms |
+| Learned v2 (default) | 87.4% [82.5, 92.2] | 100.0% [100.0, 100.0] | 72.4% [61.8, 81.6] | 9.72 ms |
 
 Clear-domain prompts come from public datasets not used for adapter training (gretel synthetic_text_to_sql, MBPP, Dolly) plus hand-written JSON requests; ambiguous prompts are hand-written.
 
-## 5. Cascade (router=centroid, split 'test', real generation)
+## 5. Cascade (router=learned, split 'test', real generation)
 
-Thresholds calibrated on the calibration half (164 prompts; rule: max accuracy on calibration split; ties -> lowest trigger rate): confidence < 0.35 or top-2 margin < 0.1. Calibration accuracy 79.3% without cascade -> 85.4% with it.
+Thresholds calibrated on the calibration half (164 prompts; rule: max accuracy on calibration split; ties -> lowest trigger rate): confidence < 1.0 or top-2 margin < 0.0. Calibration accuracy 88.4% without cascade -> 93.9% with it.
 
 | Subset | n | Direct routing | With cascade | Triggered | Rescues | Harms | p50 latency direct -> cascade |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
-| all | 166 | 80.7% [74.1, 86.8] | 81.9% [75.9, 87.4] | 58.4% | 9 | 7 | 4,964 -> 13,177 ms |
-| ambiguous | 76 | 61.8% [50.0, 72.4] | 68.4% [57.9, 79.0] | 64.5% | 8 | 3 | 6,730 -> 18,664 ms |
-| clear | 90 | 96.7% [92.2, 100.0] | 93.3% [87.8, 97.8] | 53.3% | 1 | 4 | 4,135 -> 11,771 ms |
+| all | 166 | 87.4% [82.5, 92.2] | 91.0% [86.8, 95.2] | 99.4% | 8 | 2 | 5,094 -> 19,351 ms |
+| ambiguous | 76 | 72.4% [61.8, 81.6] | 81.6% [72.4, 89.5] | 100.0% | 8 | 1 | 8,234 -> 24,969 ms |
+| clear | 90 | 100.0% [100.0, 100.0] | 98.9% [96.7, 100.0] | 98.9% | 0 | 1 | 4,473 -> 15,623 ms |

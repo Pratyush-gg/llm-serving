@@ -1,10 +1,4 @@
-"""
-Base model (no adapter) vs. LoRA adapters on the same test sets.
-
-Runs every task in eval.run_eval.DEFAULT_TASKS with the base model forced, loads the adapter
-results produced by `python -m eval.run_eval` (results/correctness_results.json), and reports the
-headline metric of each task with 95% bootstrap CIs plus a paired CI for the difference.
-"""
+"""Base model vs. LoRA adapters on the same test sets, with paired confidence intervals."""
 import json
 import os
 import sys

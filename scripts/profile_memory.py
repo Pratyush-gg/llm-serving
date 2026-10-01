@@ -1,14 +1,4 @@
-"""
-Measure real GPU memory of the routed multi-LoRA engine (base model + 3 adapters).
-
-Stages measured with torch.cuda memory statistics:
-  1. after loading the 4-bit NF4 base model
-  2. after registering the LoRA adapters
-  3. peak during generation with each adapter (and the plain base model)
-
-The comparison against "3 separate fine-tuned models" is NOT measured: it is estimated as
-3 x the measured base-model weight memory and is labelled as an estimate in the output.
-"""
+"""Measure GPU memory of the base model + adapters (the 3-separate-models figure is an estimate)."""
 import os
 import sys
 import json

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 # Ensure repo root is on sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.local_cache import HF_LOCAL_FILES_ONLY  # sets cache env vars before ML imports
+from src.local_cache import local_files_only  # sets cache env vars before ML imports
 from src.router import get_router
 from src.cascade import CascadeRouter
 
@@ -30,9 +30,9 @@ GATEWAY_ENGINE = os.environ.get("GATEWAY_ENGINE", "peft").lower()
 DEFAULT_ROUTER_STRATEGY = os.environ.get("ROUTER_STRATEGY", "auto").lower()
 ENABLE_CASCADE = os.environ.get("ENABLE_CASCADE", "false").lower() in ["true", "1", "yes"]
 GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8080"))
-# Calibrate with eval/calibrate_cascade.py and pass the chosen values via CLI flags or env vars.
-CASCADE_THRESHOLD = float(os.environ.get("CASCADE_THRESHOLD", "0.70"))
-CASCADE_MARGIN = float(os.environ.get("CASCADE_MARGIN", "0.15"))
+# Cascade thresholds calibrated for the v2 router (eval/calibrate_cascade.py).
+CASCADE_THRESHOLD = float(os.environ.get("CASCADE_THRESHOLD", "1.0"))
+CASCADE_MARGIN = float(os.environ.get("CASCADE_MARGIN", "0.0"))
 MAX_TOKENS_LIMIT = 2048
 
 ADAPTER_MAP = {
@@ -87,7 +87,7 @@ class QueryResponse(BaseModel):
     cascade_triggered: bool = False
     selection_reason: Optional[str] = None
     candidates_evaluated: Optional[List[Dict[str, Any]]] = None
-    # Per-stage timings. With cascade, generation figures are summed over all candidates generated.
+    # Per-stage timings (summed over candidates when the cascade runs).
     generation_latency_ms: Optional[float] = Field(None, description="Time spent in token generation (excludes routing and queueing)")
     adapter_switch_ms: Optional[float] = Field(None, description="Time to activate the adapter (PEFT engine only; null when not measurable)")
     prompt_tokens: Optional[int] = Field(None, description="Prompt length in tokens (null when the engine does not report it)")
@@ -129,9 +129,7 @@ _peft_model = None
 _peft_base_model = None
 _peft_tokenizer = None
 
-# The PEFT model has a single "active adapter" shared by all requests, and FastAPI runs
-# sync endpoints in a threadpool. This lock serializes engine init, set_adapter and generate
-# so concurrent requests cannot switch each other's adapter mid-generation.
+# One shared active adapter + threaded requests: serialize adapter switch and generation.
 _peft_lock = threading.RLock()
 
 def init_peft_engine():
@@ -148,13 +146,13 @@ def load_base_model():
     from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
     tokenizer = AutoTokenizer.from_pretrained(
-        BASE_MODEL_NAME, trust_remote_code=True, local_files_only=HF_LOCAL_FILES_ONLY
+        BASE_MODEL_NAME, trust_remote_code=True, local_files_only=local_files_only(BASE_MODEL_NAME)
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     has_cuda = torch.cuda.is_available()
-    use_bf16 = has_cuda and torch.cuda.is_bf16_supported()
+    use_bf16 = has_cuda and torch.cuda.get_device_capability()[0] >= 8  # native bf16 only (not emulated on T4)
     target_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
     bnb_config = BitsAndBytesConfig(
@@ -170,7 +168,7 @@ def load_base_model():
         torch_dtype=target_dtype if has_cuda else torch.float32,
         device_map="auto" if has_cuda else None,
         trust_remote_code=True,
-        local_files_only=HF_LOCAL_FILES_ONLY,
+        local_files_only=local_files_only(BASE_MODEL_NAME),
     )
     return base_model, tokenizer
 
@@ -233,8 +231,7 @@ def peft_generate_response(route: str, prompt: str, max_tokens: int = 256, tempe
             model.set_adapter(route)
             adapter_ctx = contextlib.nullcontext()
         elif is_peft:
-            # LoRA layers are injected into the base model in place, so calling base_model.generate
-            # would still apply the last active adapter. disable_adapter() gives the true base model.
+            # LoRA layers live inside the base model; disable them to get the plain base model.
             adapter_ctx = model.disable_adapter()
         else:
             adapter_ctx = contextlib.nullcontext()
@@ -356,10 +353,7 @@ def get_router_scores(
     prompt: str = Query(..., min_length=1, description="Query prompt to route"),
     strategy: Optional[Literal["centroid", "learned", "auto"]] = None,
 ):
-    """
-    Computes and returns real-time routing scores across all 4 domains without running token generation.
-    Ideal for dynamic radar charts and live router telemetry.
-    """
+    """Per-adapter router scores without generation."""
     strat = strategy or DEFAULT_ROUTER_STRATEGY
     router = get_router(strategy=strat)
     info = router.route_detailed(prompt)
@@ -539,9 +533,9 @@ if __name__ == "__main__":
                         help="Default routing strategy (default: 'auto')")
     parser.add_argument("--cascade", action="store_true", help="Enable confidence-based cascade routing")
     parser.add_argument("--cascade-threshold", type=float, default=None,
-                        help="Cascade confidence threshold (default 0.70; calibrate with eval/calibrate_cascade.py)")
+                        help="Cascade confidence threshold (default 1.0, calibrated for the v2 router; see eval/calibrate_cascade.py)")
     parser.add_argument("--cascade-margin", type=float, default=None,
-                        help="Cascade top-2 margin threshold (default 0.15)")
+                        help="Cascade top-2 margin threshold (default 0.0)")
     parser.add_argument("--ngrok", action="store_true", help="Enable public pyngrok tunnel")
     parser.add_argument("--ngrok-token", type=str, default=None, help="Optional ngrok authtoken")
     parser.add_argument("--mock-vllm", action="store_true", help="Shortcut for --engine mock")

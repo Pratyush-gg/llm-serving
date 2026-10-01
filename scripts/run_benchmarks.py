@@ -1,14 +1,4 @@
-"""
-Live latency benchmark against a running gateway (no simulation).
-
-Sends requests sequentially to /v1/chat and records the per-stage timings the gateway reports
-(routing, adapter switch, generation, token counts) plus the client-measured round trip.
-Warm-up requests are excluded from the statistics.
-
-Usage:
-  python -m src.gateway --engine peft --router-strategy learned   # in another terminal
-  python scripts/run_benchmarks.py --endpoint http://localhost:8080 --count 100
-"""
+"""Live latency benchmark against a running gateway."""
 import os
 import sys
 import json
@@ -71,8 +61,7 @@ def run_benchmarks(endpoint: str, count: int, max_tokens: int, warmup: int, rout
                    cascade: bool, seed: int) -> Dict:
     base_url = endpoint.rstrip("/")
     if "//localhost" in base_url:
-        # On Windows, "localhost" tries IPv6 first and adds ~2 s per request against the
-        # IPv4-only gateway, which would swamp the client round-trip measurement.
+        # On Windows, 'localhost' adds ~2 s per request (IPv6 fallback).
         base_url = base_url.replace("//localhost", "//127.0.0.1")
         print(f"Using {base_url} (avoids the Windows localhost IPv6 fallback delay)")
     health = requests.get(f"{base_url}/health", timeout=10).json()

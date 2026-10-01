@@ -208,19 +208,6 @@
         online = true;
         dom.statusDot.className = 'status-dot online';
         dom.statusText.textContent = `Online - ${d.engine || 'peft'}`;
-        if (d.active_adapter) {
-          dom.adapterLabel.textContent = d.active_adapter;
-        }
-        // Try to also fetch real router scores for current prompt
-        if (dom.promptInput.value.trim()) {
-          try {
-            const sr = await fetch(`${API}/v1/router/scores?prompt=${encodeURIComponent(dom.promptInput.value.trim())}`, { signal: AbortSignal.timeout(2000) });
-            if (sr.ok) {
-              const sd = await sr.json();
-              if (sd.scores) setScores(sd.scores);
-            }
-          } catch(_) {}
-        }
         return true;
       }
     } catch (_) {}
@@ -309,69 +296,58 @@
     resetPipeline();
 
     try {
-      lightPipeline(0);
-      await delay(250);
       lightPipeline(1);
 
       let result;
 
       if (online) {
-        try {
-          const body = {
-            prompt,
-            max_tokens: parseInt(dom.maxTokens.value),
-            temperature: parseFloat(dom.temperature.value),
-            router_strategy: dom.stratSel.value,
-            enable_cascade: dom.cascToggle.checked
-          };
-          const force = dom.forceAdapter.value;
-          if (force) body.force_adapter = force;
+        const body = {
+          prompt,
+          max_tokens: parseInt(dom.maxTokens.value),
+          temperature: parseFloat(dom.temperature.value),
+          router_strategy: dom.stratSel.value,
+          enable_cascade: dom.cascToggle.checked
+        };
+        const force = dom.forceAdapter.value;
+        if (force) body.force_adapter = force;
 
-          const r = await fetch(`${API}/v1/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-          });
-          const raw = await r.json();
-          if (!r.ok) {
-            const detail = typeof raw.detail === 'string' ? raw.detail : JSON.stringify(raw.detail);
-            throw new Error(`Gateway returned ${r.status}: ${detail}`);
-          }
-          // Map gateway response to our internal format
-          result = {
-            adapter: raw.adapter_used || 'base',
-            response: raw.response || '',
-            scores: {},
-            route_ms: raw.routing_latency_ms || 0,
-            switch_ms: null,  // not measured by the gateway
-            gen_ms: (raw.total_latency_ms || 0) - (raw.routing_latency_ms || 0),
-            total_ms: raw.total_latency_ms || 0,
-            strategy: raw.router_strategy || 'learned',
-            cascade: raw.cascade_triggered ? {
-              reason: raw.selection_reason || '',
-              candidates: (raw.candidates_evaluated || []).map(c => ({
-                adapter: c.adapter,
-                quality: c.quality_score || c.combined_score || 0,
-                chosen: c.adapter === raw.adapter_used
-              }))
-            } : null
-          };
-          const realScores = force ? null : await fetchRouterScores(prompt, dom.stratSel.value);
-          result.scores = realScores || { [result.adapter]: raw.router_confidence || 0 };
-        } catch (e) {
-          console.warn('Live API failed, falling back to mock:', e);
-          result = mockInference(prompt);
-          result.mockReason = `live request failed - ${e.message}`;
+        const r = await fetch(`${API}/v1/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const raw = await r.json();
+        if (!r.ok) {
+          const detail = typeof raw.detail === 'string' ? raw.detail : JSON.stringify(raw.detail);
+          throw new Error(`Gateway returned ${r.status}: ${detail}`);
         }
+        // Map gateway response to our internal format
+        result = {
+          adapter: raw.adapter_used || 'base',
+          response: raw.response || '',
+          scores: {},
+          route_ms: raw.routing_latency_ms || 0,
+          switch_ms: raw.adapter_switch_ms ?? null,
+          gen_ms: raw.generation_latency_ms ?? null,
+          total_ms: raw.total_latency_ms || 0,
+          strategy: raw.router_strategy || 'learned',
+          cascade: raw.cascade_triggered ? {
+            reason: raw.selection_reason || '',
+            candidates: (raw.candidates_evaluated || []).map(c => ({
+              adapter: c.adapter,
+              quality: c.quality_score || c.combined_score || 0,
+              chosen: c.adapter === raw.adapter_used
+            }))
+          } : null
+        };
+        const realScores = force ? null : await fetchRouterScores(prompt, dom.stratSel.value);
+        result.scores = realScores || { [result.adapter]: raw.router_confidence || 0 };
       } else {
         await delay(600);
         result = mockInference(prompt);
       }
 
-      lightPipeline(2);
-      await delay(200);
       lightPipeline(3);
-      await delay(300);
 
       // Apply results
       const adapter = result.adapter || result.route || 'base';
@@ -414,7 +390,7 @@
       }
 
       // History
-      addHistory({ prompt, adapter, mock: !!result.mock, conf: result.scores?.[adapter] || 0, total_ms: result.total_ms, cascade: !!result.cascade });
+      addHistory({ time: new Date().toLocaleTimeString(), prompt, adapter, mock: !!result.mock, conf: result.scores?.[adapter] || 0, total_ms: result.total_ms, cascade: !!result.cascade });
 
       dom.pipelineStatus.textContent = 'Done';
 
@@ -441,7 +417,7 @@
     }
     dom.historyBody.innerHTML = history.map((h, i) => `
       <tr>
-        <td class="mono-sm">${new Date().toLocaleTimeString()}</td>
+        <td class="mono-sm">${h.time}</td>
         <td title="${esc(h.prompt)}">${esc(h.prompt.slice(0, 55))}${h.prompt.length > 55 ? '...' : ''}</td>
         <td><span class="route-tag rt-${h.adapter}">${h.adapter.toUpperCase()}${h.mock ? ' (MOCK)' : ''}</span></td>
         <td class="mono-sm">${(h.conf * 100).toFixed(0)}%</td>

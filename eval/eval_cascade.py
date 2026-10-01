@@ -1,17 +1,4 @@
-"""
-Cascade evaluation with REAL generation (no simulated outputs).
-
-For each prompt in the test set:
-  - direct:  the router's choice (routing only; its generation is used for latency)
-  - cascade: CascadeRouter, whose candidate generations come from a running gateway with the
-             adapter forced (so the gateway's own router does not interfere)
-Generations are cached per (adapter, prompt), so an adapter is generated at most once per prompt.
-Latencies use the generation times reported by the gateway.
-
-Usage:
-  python -m src.gateway --engine peft            # in another terminal
-  python eval/eval_cascade.py --endpoint http://127.0.0.1:8080 --strategy centroid
-"""
+"""Evaluate cascade routing with real generation on the test half of the router test set."""
 import os
 import sys
 import json
@@ -38,7 +25,7 @@ class GatewayGenerator:
         self.max_tokens = max_tokens
         self.session = requests.Session()
         self.cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        # Generations are appended to cache_path as they happen, so an interrupted run can resume.
+        # Save generations as they happen so an interrupted run can resume.
         self.cache_file = None
         if cache_path:
             os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)

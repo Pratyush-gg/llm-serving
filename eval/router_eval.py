@@ -1,9 +1,4 @@
-"""
-Router evaluation on data/router_testset.jsonl (built by scripts/build_router_testset.py).
-
-Reports accuracy separately for clear-domain and ambiguous prompts, a 4x4 confusion matrix,
-per-class precision/recall/F1 and routing latency. No generation is involved.
-"""
+"""Router accuracy on data/router_testset.jsonl, split into clear and ambiguous prompts."""
 import json
 import os
 import sys

@@ -1,22 +1,4 @@
-"""
-Run the full measured benchmark suite on the local GPU, in order:
-
-  1. VRAM profile (alone on the GPU)
-  2. start the gateway (PEFT engine)
-  3. adapter quality eval, then base-model baseline eval (raw outputs saved)
-  4. live latency benchmark
-  5. router eval on the TEST half of the router test set (centroid, learned v1, learned v2)
-  6. cascade: calibrate thresholds on the CALIBRATION half, evaluate on the TEST half
-  7. stop the gateway, build the combined report
-
-Before running: plug in, set Windows power mode to "Best performance", close heavy apps.
-The code eval runs model-written programs in .eval_sandbox/ and asks first unless --yes is given.
-
-Usage:
-  python scripts/run_all_benchmarks.py            # interactive (asks before running model code)
-  python scripts/run_all_benchmarks.py --yes      # approve running model-generated code up front
-  python scripts/run_all_benchmarks.py --yes --resume   # continue after stopping (Ctrl+C) mid-run
-"""
+"""Run the full benchmark suite; use --resume to continue an interrupted run."""
 import os
 import sys
 import time

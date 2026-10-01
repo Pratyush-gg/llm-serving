@@ -1,17 +1,4 @@
-"""
-Calibrate cascade thresholds on the CALIBRATION half of the router test set.
-
-The cascade always compares the router's top-2 adapters, whatever the thresholds are, so each
-prompt only needs generations for {direct route, top-1, top-2}. Those are generated once through
-the gateway; every (confidence threshold, margin) pair in the grid is then scored offline.
-
-Selection rule: highest accuracy on the calibration half; ties -> lowest trigger rate.
-The full grid is saved so a different accuracy/latency trade-off can be chosen.
-Reported results must come from eval/eval_cascade.py on the TEST half with these thresholds.
-
-Usage:
-  python eval/calibrate_cascade.py --endpoint http://127.0.0.1:8080 --strategy centroid
-"""
+"""Pick cascade thresholds on the calibration half of the router test set."""
 import os
 import sys
 import json

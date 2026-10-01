@@ -1,14 +1,4 @@
-"""
-Render a database schema in different styles, read from the real definitions in SQLite.
-
-Real users describe schemas in many ways; the SQL adapter was trained only on CREATE TABLE.
-Test prompts use these styles so results show whether the adapter depends on that one format.
-Data rows (INSERT statements) are never shown; they are only used to execute queries.
-
-  create  : the original CREATE TABLE / CREATE VIEW statements
-  compact : one line per table, e.g. orders(id INT, customer TEXT)
-  prose   : plain English, e.g. "The table orders has the columns id (INT) and customer (TEXT)."
-"""
+"""Render a database schema as CREATE TABLE, a compact list, or plain English."""
 import sqlite3
 from typing import List, Tuple
 

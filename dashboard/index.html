@@ -29,7 +29,7 @@
             <option value="centroid">Centroid Cosine</option>
           </select>
         </div>
-        <div class="control">
+        <div class="control" title="High-accuracy mode: generates with the top-2 adapters and keeps the better answer (about 3.8x slower)">
           <label>Cascade</label>
           <label class="toggle">
             <input type="checkbox" id="cascade-toggle" />
@@ -180,11 +180,11 @@
             <table class="btable">
               <thead><tr><th>Test set (n)</th><th>Metric</th><th>Base</th><th>Adapter</th><th>Diff (95% CI)</th></tr></thead>
               <tbody>
-                <tr><td>SQL, gretel (300)</td><td>Exec. accuracy</td><td>41.0%</td><td class="hl">39.7%</td><td>-1.3 [-7.0, +4.3]</td></tr>
+                <tr><td>SQL, gretel (300)</td><td>Exec. accuracy</td><td>41.0%</td><td class="hl">56.7%</td><td class="delta-pos">+15.7 [+10.0, +21.3]</td></tr>
                 <tr><td>JSON in-scope (60)</td><td>Exact match</td><td>53.3%</td><td class="hl">73.3%</td><td class="delta-pos">+20.0 [+6.7, +33.3]</td></tr>
                 <tr><td>JSON paraloq (80)</td><td>Field F1</td><td>44.5%</td><td class="hl">34.7%</td><td>-9.8 [-21.2, +0.8]</td></tr>
-                <tr><td>HumanEval (164)</td><td>Pass@1</td><td>44.5%</td><td class="hl">36.6%</td><td class="delta-neg">-7.9 [-15.8, 0.0]</td></tr>
-                <tr><td>MBPP (257)</td><td>Pass@1</td><td>45.1%</td><td class="hl">50.2%</td><td>+5.1 [-0.4, +10.5]</td></tr>
+                <tr><td>HumanEval (164)</td><td>Pass@1</td><td>44.5%</td><td class="hl">43.9%</td><td>-0.6 [-8.5, +6.7]</td></tr>
+                <tr><td>MBPP (257)</td><td>Pass@1</td><td>45.1%</td><td class="hl">51.0%</td><td>+5.8 [+0.0, +11.7]</td></tr>
               </tbody>
             </table>
           </div>
@@ -214,13 +214,14 @@
             <table class="btable">
               <thead><tr><th>Stage</th><th>Mean</th><th>P50</th><th>P95</th></tr></thead>
               <tbody>
-                <tr><td>Router (CPU)</td><td>12.0 ms</td><td class="hl">12.6 ms</td><td>19.6 ms</td></tr>
-                <tr><td>Adapter Switch</td><td>8.6 ms</td><td class="hl">5.7 ms</td><td>18.7 ms</td></tr>
-                <tr><td>Generation (max 128 tok)</td><td>2,770 ms</td><td class="hl">1,986 ms</td><td>5,685 ms</td></tr>
-                <tr class="row-total"><td>Server total</td><td>2,792 ms</td><td class="hl">2,010 ms</td><td>5,721 ms</td></tr>
+                <tr><td>Router (CPU)</td><td>16.9 ms</td><td class="hl">17.7 ms</td><td>26.0 ms</td></tr>
+                <tr><td>Adapter Switch</td><td>12.4 ms</td><td class="hl">8.6 ms</td><td>35.0 ms</td></tr>
+                <tr><td>Generation (max 128 tok)</td><td>4,815 ms</td><td class="hl">3,416 ms</td><td>10,617 ms</td></tr>
+                <tr class="row-total"><td>Server total</td><td>4,847 ms</td><td class="hl">3,449 ms</td><td>10,657 ms</td></tr>
               </tbody>
             </table>
           </div>
+          <div class="cm-foot">Latest run (9.7 tok/s). Decode speed varied 9.7-16.9 tok/s between runs with the machine's power state.</div>
         </div>
 
         <!-- Confusion Matrix -->

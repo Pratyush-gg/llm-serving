@@ -20,48 +20,55 @@ tags:
 
 ## 1. Adapter Overview
 
-`sql_lora` is a specialized low-rank adaptation module designed to translate natural language user questions and database schema DDL into syntactically valid and semantically precise SQLite queries. It is designed to be dynamically mounted onto a shared frozen `Qwen2.5-1.5B-Instruct` base model in a routed multi-adapter serving architecture.
+`sql_lora` turns a natural-language question plus a database schema (given as CREATE TABLE statements,
+a compact `table(col TYPE, ...)` list, or a plain-English description) into a SQLite query. It is mounted
+on the shared, frozen `Qwen2.5-1.5B-Instruct` base model (4-bit NF4) by the routed serving gateway.
 
-- **Rank ($r$):** 16
-- **Alpha ($\alpha$):** 32
-- **LoRA Dropout:** 0.05
-- **Target Modules:** `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`
-- **Adapter Parameter Count:** ~1.1M trainable parameters (~0.07% of base model)
-- **Disk Size:** 15.08 MB total (safetensors weight: 4.17 MB)
+- **Rank (r):** 16, **alpha:** 32, **dropout:** 0.05
+- **Target modules:** `q_proj`, `v_proj`
+- **Trainable parameters:** 2,179,072 (~0.14% of the 1.54B base)
+- **Adapter weights:** 8.7 MB (`adapter_model.safetensors`, fp32)
 
 ---
 
 ## 2. Training Details & Hardware
 
-- **Hardware:** NVIDIA GeForce RTX 4050 Laptop GPU (6GB VRAM)
-- **Training Framework:** PyTorch 2.5 + CUDA 12.4 + HuggingFace PEFT 0.14.0 + TRL
-- **Quantization:** 4-bit NormalFloat4 (NF4) with double quantization via `bitsandbytes`
-- **Epochs:** 3
-- **Batch Size:** 4 (gradient accumulation steps: 2, effective batch size: 8)
-- **Optimizer:** Paged AdamW 8-bit (`paged_adamw_8bit`)
-- **Learning Rate:** 2e-4 (cosine schedule with warmup)
-- **Training Time:** 3 minutes 23 seconds
-- **Final Training Loss:** `0.8345`
+- **Hardware:** NVIDIA GeForce RTX 4050 Laptop GPU (6 GB), bf16 compute, base model in 4-bit NF4 (QLoRA)
+- **Epochs:** 2, best epoch kept by validation loss (epoch 2: 0.198; epoch 1: 0.204)
+- **Batch size:** 4 x 2 gradient-accumulation steps (effective 8), max length 512 tokens
+- **Optimizer / LR:** paged AdamW 8-bit, 2e-4, cosine schedule with warmup
+- **Loss:** on answer (SQL) tokens only
+- **Training time:** 26.7 minutes; final training loss 0.216
 
 ### Training Data
-- Curated from `b-mc2/sql-create-context` with standardized table schema DDL, natural language questions, and gold reference SQL statements.
-- **Training Split:** 600 examples (`data/sql_train.jsonl`)
-- **Held-Out Split:** 60 examples (`data/sql_holdout.jsonl`) with 0% data leakage verified.
+- 5,000 training + 100 validation examples from the **train** split of
+  `gretelai/synthetic_text_to_sql` (Apache-2.0), built by `scripts/build_training_sets.py`:
+  SELECT queries that run in SQLite and return rows, schema shown in three styles (one third each),
+  no data rows in the prompt. Questions that also appear in the test split are excluded.
+- Files: `data/sql_train_v2.jsonl`, `data/sql_val_v2.jsonl`. The first version of this adapter was trained
+  on 600 simple single-table questions from `b-mc2/sql-create-context` (`data/sql_train.jsonl`).
 
 ---
 
 ## 3. Evaluation Results (measured)
 
-300 questions from gretelai/synthetic_text_to_sql (test split); queries run on each question's own data rows
-(`data/eval/sql_gretel.jsonl`, `eval/sql_eval.py`). 95% bootstrap CIs; the difference CI is paired.
+300 questions from gretelai/synthetic_text_to_sql (**test** split); queries run on each question's own data
+rows (`data/eval/sql_gretel.jsonl`, `eval/sql_eval.py`). 95% bootstrap CIs; the difference CI is paired.
 
 | Metric | Base `Qwen2.5-1.5B-Instruct` | `sql_lora` | Difference |
 | :--- | :--- | :--- | :--- |
-| Execution accuracy | 41.0% [35.3, 47.0] | 39.7% [34.0, 45.3] | -1.3 [-7.0, +4.3] |
+| Execution accuracy | 41.0% [35.3, 47.0] | **56.7%** [51.0, 62.3] | **+15.7 [+10.0, +21.3]** |
+| Queries that run | 80% | 95% | |
 
-No measurable benefit on realistic, often multi-table questions: the adapter was trained on 600 simple
-single-table questions. Main failure modes: wrong join/filter logic (41%), invented table or column names (12%).
-The older 96.67% figure came from a broken metric (queries run on empty tables) and is withdrawn.
+| Schema shown as | Base | `sql_lora` |
+| :--- | :--- | :--- |
+| CREATE TABLE | 47% | 61% |
+| Compact list | 35% | 54% |
+| Plain English | 41% | 55% |
+
+Training and test data come from the same source (different, held-out rows), so part of the gain is
+learning that dataset's style; transfer to other SQL benchmarks (e.g. Spider) is not yet measured.
+Earlier versions trained on 600 single-table questions showed no gain (39.7%, then 41.0%).
 
 ---
 

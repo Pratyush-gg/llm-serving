@@ -181,11 +181,7 @@ class DomainQualityScorer:
 
 
 class CascadeRouter:
-    """
-    Orchestrates confidence-based cascade routing.
-    Threshold: queries with router confidence below cascade_threshold trigger evaluation
-    across top candidate adapters.
-    """
+    """Generate with the top-2 adapters when the router is unsure and keep the better output."""
 
     def __init__(
         self,
@@ -208,10 +204,7 @@ class CascadeRouter:
         generate_fn: Callable[[str, str], str],
         force_adapter: Optional[str] = None,
     ) -> CascadeResult:
-        """
-        Executes cascade routing and returns the optimal completion.
-        generate_fn: Callable(route: str, prompt: str) -> str
-        """
+        """Route the prompt (cascading if needed); generate_fn(route, prompt) returns the text."""
         t_start = time.perf_counter()
 
         if force_adapter is not None and force_adapter not in VALID_ROUTES:
@@ -257,8 +250,7 @@ class CascadeRouter:
         second_route, second_score = sorted_candidates[1] if len(sorted_candidates) > 1 else (None, 0.0)
         score_margin = top_score - second_score
 
-        # Determine if cascade is necessary:
-        # Trigger if confidence is below cascade_threshold OR if top-2 difference is tight
+        # Cascade if confidence is low or the top-2 scores are close.
         should_cascade = (
             (primary_conf < self.cascade_threshold or score_margin < self.margin_threshold)
             and second_route is not None

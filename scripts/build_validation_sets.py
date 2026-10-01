@@ -1,14 +1,4 @@
-"""
-Build adapter validation sets (data/<task>_val.jsonl) from rows NOT used for train or holdout.
-
-The original data scripts pick rows deterministically. This script replays the same selection,
-checks that it reproduces the existing train + holdout files exactly (so we know which rows are
-used), and then takes the next unused rows as validation data. The train files are not changed.
-
-  sql  : next 60 valid rows of b-mc2/sql-create-context after the 660 used ones
-  json : next 60 unique samples from the same synthetic generator (same seed)
-  code : 60 problems from MBPP's validation split (the code generator has only 13 unused tasks)
-"""
+"""Build adapter validation sets from source rows not used for training or holdout."""
 import os
 import sys
 import json
@@ -80,8 +70,7 @@ def build_json(n):
 
 
 def build_code(n, seed=7):
-    """The code generator has only 13 unused tasks, so code validation uses MBPP's validation
-    split (real problems; disjoint from the MBPP test split used for evaluation)."""
+    """Code validation set from MBPP's validation split."""
     from datasets import load_dataset
 
     ds = load_dataset("google-research-datasets/mbpp", "full", split="validation")

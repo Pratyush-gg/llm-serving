@@ -6,22 +6,22 @@ import argparse
 from typing import Dict, List
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from src.local_cache import HF_LOCAL_FILES_ONLY  # noqa: E402  (keeps caches in the repo; read base model offline)
+from src.local_cache import local_files_only  # noqa: E402
 
 DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
+# SQL and code use the v2 data; JSON keeps its original set.
 TASK_DATA_MAP = {
-    "sql": "data/sql_train.jsonl",
+    "sql": "data/sql_train_v2.jsonl",
     "json": "data/json_train.jsonl",
-    "code": "data/code_train.jsonl",
+    "code": "data/code_train_v2.jsonl",
 }
 
-# Validation sets built from unused source rows (scripts/build_validation_sets.py). When present,
-# validation loss is computed every epoch and the best checkpoint is kept.
+# Validation loss is computed every epoch and the best checkpoint is kept.
 TASK_VAL_MAP = {
-    "sql": "data/sql_val.jsonl",
+    "sql": "data/sql_val_v2.jsonl",
     "json": "data/json_val.jsonl",
-    "code": "data/code_val.jsonl",
+    "code": "data/code_val_v2.jsonl",
 }
 
 def load_jsonl_dataset(file_path: str) -> List[Dict]:
@@ -34,22 +34,14 @@ def load_jsonl_dataset(file_path: str) -> List[Dict]:
                 data.append(json.loads(line))
     return data
 
-def format_conversations(records: List[Dict], tokenizer):
-    """Format prompt-completion pairs using Qwen2.5 chat template."""
+def format_conversations(records: List[Dict], tokenizer=None):
+    """Prompt/completion pairs; TRL then trains on the completion tokens only."""
     from datasets import Dataset
-    formatted_texts = []
-    for r in records:
-        messages = [
-            {"role": "user", "content": r["prompt"]},
-            {"role": "assistant", "content": r["completion"]},
-        ]
-        text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=False,
-        )
-        formatted_texts.append({"text": text})
-    return Dataset.from_list(formatted_texts)
+    return Dataset.from_list([
+        {"prompt": [{"role": "user", "content": r["prompt"]}],
+         "completion": [{"role": "assistant", "content": r["completion"]}]}
+        for r in records
+    ])
 
 def get_adapter_size_mb(adapter_dir: str) -> float:
     total_bytes = 0
@@ -95,17 +87,21 @@ def train_adapter(
 
     output_dir = os.path.join(output_base_dir, f"{task}_lora")
     os.makedirs(output_dir, exist_ok=True)
+    # TRL overwrites README.md with a generic model card; keep the hand-written one.
+    readme_path = os.path.join(output_dir, "README.md")
+    kept_readme = open(readme_path, encoding="utf-8").read() if os.path.exists(readme_path) else None
 
     # 1. Load Tokenizer
     print("Loading tokenizer...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True,
-                                              local_files_only=HF_LOCAL_FILES_ONLY)
+                                              local_files_only=local_files_only(base_model_id))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # 2. Precision and Dtype Selection (T4 = fp16, RTX 40/Ampere = bf16)
     has_cuda = torch.cuda.is_available()
-    use_bf16 = has_cuda and torch.cuda.is_bf16_supported()
+    # Native bf16 only (compute capability >= 8); the T4 emulates it slowly, so use fp16 there.
+    use_bf16 = has_cuda and torch.cuda.get_device_capability()[0] >= 8
     use_fp16 = has_cuda and not use_bf16
     target_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
@@ -127,7 +123,7 @@ def train_adapter(
         torch_dtype=target_dtype if has_cuda else torch.float32,
         device_map=device_map,
         trust_remote_code=True,
-        local_files_only=HF_LOCAL_FILES_ONLY,
+        local_files_only=local_files_only(base_model_id),
     )
 
     if has_cuda:
@@ -159,7 +155,7 @@ def train_adapter(
         print(f"WARNING: no validation set for [{task}] ({val_path} missing): training without "
               "validation loss or best-checkpoint selection.", flush=True)
 
-    # With a validation set: evaluate + checkpoint every epoch and restore the lowest-loss epoch.
+    # Evaluate every epoch and keep the lowest-validation-loss epoch.
     eval_kwargs = dict(
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -186,7 +182,7 @@ def train_adapter(
         optim="paged_adamw_8bit" if has_cuda else "adamw_torch",
         warmup_steps=warmup_steps,
         lr_scheduler_type="cosine",
-        dataset_text_field="text",
+        completion_only_loss=True,
         max_length=max_seq_length,
         report_to="none",
     )
@@ -196,16 +192,25 @@ def train_adapter(
     trainer = SFTTrainer(model=base_model, train_dataset=train_dataset, eval_dataset=eval_dataset,
                          peft_config=lora_config, args=training_args)
 
+    # fp16 training needs fp32 trainable weights (the gradient scaler rejects bf16).
+    if use_fp16:
+        for param in trainer.model.parameters():
+            if param.requires_grad:
+                param.data = param.data.float()
+
     # 8. Train
     print(f"Training [{task}] adapter for {epochs} epoch(s)...", flush=True)
     train_result = trainer.train()
 
-    # 9. Save Adapter Weights & Tokenizer (with a validation set, this is the best-epoch model)
+    # 9. Save the (best-epoch) adapter
     print(f"Saving tuned adapter to {output_dir}...", flush=True)
-    trainer.save_model(output_dir)
+    trainer.save_model(output_dir)  # also writes a generic auto-generated model card to README.md
     tokenizer.save_pretrained(output_dir)
+    if kept_readme is not None:  # keep the hand-written adapter README
+        with open(readme_path, "w", encoding="utf-8") as f:
+            f.write(kept_readme)
 
-    # Keep the loss history next to the adapter and drop intermediate epoch checkpoints.
+    # Save the loss history; delete intermediate checkpoints.
     history = {
         "task": task,
         "validation_set": val_path if eval_dataset is not None else None,

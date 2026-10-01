@@ -173,8 +173,7 @@ class LearnedRouter:
 # Router cache
 _routers: Dict[str, object] = {}
 
-# Strategy used for 'auto': the router that scores best on the test half of the realistic test set
-# (data/router_testset.jsonl): learned v2 87.4% vs centroid 80.7% (results/router_eval_*.json).
+# Best router on the test set: learned v2 87.4% vs centroid 80.7%.
 AUTO_STRATEGY = "learned"
 
 
@@ -183,13 +182,7 @@ def get_router(
     threshold: Optional[float] = None,
     model_path: str = DEFAULT_LEARNED_MODEL_PATH,
 ) -> object:
-    """
-    Factory function for routers.
-    Strategy can be:
-      - 'learned': Uses the trained MLP classifier
-      - 'centroid': Uses the cosine-similarity centroid router
-      - None / 'auto': Uses AUTO_STRATEGY (the best router on the realistic test set)
-    """
+    """Return a cached router: 'learned', 'centroid', or 'auto' (= AUTO_STRATEGY)."""
     global _routers
 
     if strategy is None:

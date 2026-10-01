@@ -33,9 +33,9 @@ tags:
 - **Rank ($r$):** 16
 - **Alpha ($\alpha$):** 32
 - **LoRA Dropout:** 0.05
-- **Target Modules:** `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`
-- **Adapter Parameter Count:** ~1.1M trainable parameters (~0.07% of base model)
-- **Disk Size:** 15.08 MB total (safetensors weight: 4.17 MB)
+- **Target Modules:** `q_proj`, `v_proj`
+- **Adapter Parameter Count:** 2,179,072 trainable parameters (~0.14% of the 1.54B base)
+- **Adapter weights:** 4.4 MB (`adapter_model.safetensors`, 16-bit)
 
 ---
 

@@ -10,8 +10,7 @@ from fastapi.testclient import TestClient
 try:
     import torch  # noqa: F401
 except ImportError:
-    # The PEFT code path only needs torch.no_grad / torch.cuda here; a stub keeps the
-    # tests runnable in a lightweight environment without a multi-GB torch install.
+    # Stub torch so these tests run without installing it.
     sys.modules["torch"] = types.SimpleNamespace(
         no_grad=contextlib.nullcontext,
         cuda=types.SimpleNamespace(is_available=lambda: False),

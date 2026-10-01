@@ -1,10 +1,4 @@
-"""
-Build results/combined_benchmark_report.md from the measured result files.
-
-Every figure comes from a results/*.json file produced by a measurement script; the only
-estimate (3 separate models' weight memory) is labelled as such. Missing files are reported
-as "not run" instead of being filled with placeholder numbers.
-"""
+"""Build results/combined_benchmark_report.md from the results files."""
 import json
 import os
 from datetime import datetime
@@ -63,7 +57,7 @@ def quality_section(bt):
         "",
     ]
 
-    # SQL accuracy by how the schema was shown (the adapter was trained on CREATE TABLE only).
+    # SQL accuracy by schema format in the prompt.
     b_sql = (bt.get("baseline_metrics") or {}).get("sql", {}).get("by_schema_style")
     t_sql = (bt.get("tuned_metrics") or {}).get("sql", {}).get("by_schema_style")
     if b_sql and t_sql:

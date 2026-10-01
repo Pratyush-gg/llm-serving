@@ -8,8 +8,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 MAX_VM_STEPS = 2_000_000    # abort runaway queries (e.g. recursive CTEs, huge cross joins)
 
-# Only reads are allowed when executing queries: model output must not be able to
-# ATTACH files, write, or change the database.
+# Model-generated SQL may only read: no ATTACH, writes or schema changes.
 _ALLOWED_ACTIONS = {
     sqlite3.SQLITE_SELECT,
     sqlite3.SQLITE_READ,
@@ -92,8 +91,7 @@ def data_execution_check(setup_sql: str, gold_sql: str, gen_sql: str) -> Tuple[b
 
 
 def evaluate_sql(examples: List[Dict], generate_fn: Callable[[str], str]) -> Dict[str, float]:
-    """Execution accuracy: both queries run on each example's own rows (`setup_sql`) and results
-    are compared exactly. Per-example correctness is returned for confidence intervals."""
+    """Execution accuracy: gold and generated queries run on each example's own data."""
     from eval.stats import with_ci
 
     executed = exec_correct = string_matched = gold_errors = 0

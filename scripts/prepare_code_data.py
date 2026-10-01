@@ -13,8 +13,7 @@ def verify_code_and_assertions(func_code: str, assertions: str) -> bool:
         print(f"Assertion failed: {e}\nCode:\n{func_code}\nAssertions:\n{assertions}")
         return False
 
-# Comprehensive bank of distinct algorithmic, utility, and data-processing tasks
-# Each task has: (func_name, docstring_and_signature, gold_implementation, assertions)
+# Base tasks: (func_name, docstring_and_signature, gold_implementation, assertions)
 CODE_TASKS = [
     # 1. String Manipulation
     (
@@ -328,10 +327,7 @@ CODE_TASKS = [
 ]
 
 def generate_variations():
-    """
-    Expand base tasks into 660 total unique tasks by systematic functional composition,
-    algorithmic variants, and parameterizations, verifying every single one.
-    """
+    """Expand the base tasks into 660 unique tasks."""
     all_samples = []
     
     # First: verify all base tasks

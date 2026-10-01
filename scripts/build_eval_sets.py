@@ -1,22 +1,4 @@
-"""
-Build realistic, natural-language test sets for the LoRA adapters (data/eval/).
-
-  sql_gretel.jsonl       ~300 SELECT questions from gretelai/synthetic_text_to_sql (test split, Apache-2.0).
-                         Each example carries its own CREATE + INSERT statements, so queries run on real rows.
-                         The prompt shows the schema only (no data rows), in one of three styles
-                         (CREATE TABLE / compact / plain English, a third each) - see scripts/schema_formats.py.
-                         Kept only if the gold query runs in SQLite and returns a non-empty result.
-                         Rows used by the router test set are excluded.
-  code_humaneval.jsonl   164 problems from openai/openai_humaneval (MIT) with the official tests.
-  code_mbpp.jsonl        257 problems from MBPP sanitized test split (CC BY 4.0), scored on all tests;
-                         the prompt shows one test so the model knows the function name.
-  json_paraloq.jsonl     80 documents sampled from paraloq/json_data_extraction (Apache-2.0) with
-                         schema + gold JSON: an OUT-OF-SCOPE generalization test for the JSON adapter.
-                         Only documents whose prompt fits in ~3k tokens are eligible (biases toward shorter docs).
-
-The in-scope JSON set (data/eval/json_inscope.jsonl) is hand-written and reviewed separately.
-All downloads go to the repo-local .model_cache/ folder.
-"""
+"""Build the adapter test sets in data/eval/ from public datasets."""
 import os
 import sys
 import json

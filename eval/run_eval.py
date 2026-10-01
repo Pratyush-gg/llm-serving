@@ -1,13 +1,4 @@
-"""
-Unified correctness evaluation for the LoRA adapters.
-
-Test sets (natural-language prompts, see scripts/build_eval_sets.py):
-  sql            data/eval/sql_gretel.jsonl       execution accuracy on each example's own data
-  json           data/eval/json_inscope.jsonl     {user, order_id, amount} extraction (hand-written, reviewed)
-  json_paraloq   data/eval/json_paraloq.jsonl     out-of-scope schemas (generalization)
-  code_humaneval data/eval/code_humaneval.jsonl   HumanEval pass@1
-  code_mbpp      data/eval/code_mbpp.jsonl        MBPP (sanitized test) pass@1
-"""
+"""Evaluate the LoRA adapters on the test sets in data/eval/."""
 import json
 import os
 import re
@@ -130,8 +121,7 @@ def run_evaluation(
     else:
         raise ValueError(f"Unknown backend: {backend}")
 
-    # Every raw output is appended as soon as it is generated, so results can be audited, re-scored,
-    # and an interrupted run resumed (resume=True reuses outputs already in the file).
+    # Save each output as soon as it exists (audit, re-score, resume).
     raw_path, cached, raw_file = None, {}, None
     if backend == "endpoint" and raw_output_dir:
         label = re.sub(r"[^A-Za-z0-9_.-]+", "_", GATEWAY_ADAPTER_NAMES.get(model, model))

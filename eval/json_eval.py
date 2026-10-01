@@ -53,13 +53,7 @@ def _field_matches(field: str, val_gen, val_gold) -> bool:
 
 
 def evaluate_json(examples: List[Dict], generate_fn: Callable[[str], str]) -> Dict[str, float]:
-    """
-    {user, order_id, amount} extraction.
-      schema_valid_rate : output parses and has the three fields with valid types (amount must be a number)
-      exact_match_rate  : all three values correct, over ALL examples. Text ignores case/extra spaces;
-                          amount accepts numeric strings like "$150.00" (prompts never ask for a number type)
-      field_accuracy    : correct fields among schema-valid outputs only
-    """
+    """Score {user, order_id, amount} extraction: schema validity, exact match, field accuracy."""
     from eval.stats import with_ci
 
     valid = exact = field_correct = field_total = 0
@@ -127,14 +121,7 @@ def _flatten(obj, prefix="") -> List[tuple]:
 
 
 def evaluate_json_schema(examples: List[Dict], generate_fn: Callable[[str], str]) -> Dict[str, float]:
-    """
-    Free-form schema extraction (e.g. paraloq). Per example:
-      parse       : output parses as JSON
-      schema_valid: output validates against the example's JSON schema (needs the `jsonschema`
-                    package; reported as null when it is not installed)
-      leaf F1     : overlap of (path, value) leaves with the gold JSON
-      exact match : parsed output equals the gold JSON after normalization
-    """
+    """Score free-form schema extraction: parse rate, schema validity, leaf F1, exact match."""
     from collections import Counter
     from eval.stats import with_ci
 

@@ -93,8 +93,7 @@ def evaluate_code(
         for i, ex in enumerate(examples, start=1):
             raw_gen = generate_fn(ex["prompt"])
             cleaned_fn = clean_code(raw_gen)
-            # Imports / helper functions given in the problem statement (e.g. HumanEval stubs) run first,
-            # as in the official harnesses; the model's code may redefine them.
+            # Imports/helpers from the problem statement run first, as in the official harnesses.
             prelude = ex.get("prelude", "").strip()
             test_script = (f"{prelude}\n\n" if prelude else "") + \
                 f"{cleaned_fn.strip()}\n\n# --- Unit Assertions ---\n{ex['assertions'].strip()}\n"
